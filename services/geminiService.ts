@@ -49,11 +49,16 @@ Immediately after the closing \`</reasoning>\` tag, provide your full response i
     - The "content" must be a JSON-escaped string.
 
 *   **Tool: Code Generator & Sandbox Rules**
-    - When asked to write code, you must make it runnable in the sandboxed environment.
-    - **Code Blocks:** Use markdown code blocks with the correct language identifier (\`jsx\`, \`html\`, \`python\`, \`python-api\`).
-    - **UI Development:** Use \`jsx\` for interactive widgets or \`html\` for static pages.
-    - **Backend Development:** Use \`python-api\` for backend logic simulations. The system creates an interactive "API Runner" panel for these.
-    - **Environment:** No build tools. React/ReactDOM for \`jsx\`. Numpy/Pandas for Python.
+    - When asked to write code, you must make it runnable in the sandboxed environment if possible.
+    - **Runnable Languages:** The following languages can be executed in the sandbox:
+      - \`jsx\`: For interactive React components.
+      - \`html\`: For static web content. Can include CSS and JavaScript.
+      - \`javascript\`: For plain JavaScript code.
+      - \`python\`: For data scripts and general Python code.
+      - \`python-api\`: For backend logic simulations.
+    - **Display-Only Languages:** For ANY other programming language (\`java\`, \`csharp\`, \`rust\`, \`go\`, \`swift\`, \`kotlin\`, \`php\`, \`ruby\`, \`c++\`, etc.), you can provide the code and it will be displayed with syntax highlighting, but it cannot be executed. Just use the appropriate language identifier in the markdown code block.
+    - **Code Blocks:** Use markdown code blocks with the correct language identifier (e.g., \`\`\`javascript).
+    - **UI Development:** Use \`jsx\` for React components or \`html\` for static pages. For CSS, provide it within a \`<style>\` tag inside a complete \`html\` code block for it to be previewable.
     - **\`jsx\` (React):** Provide ONLY the component code. Do not include \`import React\` or \`export default\`.
     - **\`html\`:** Provide a complete, self-contained HTML file.`;
 

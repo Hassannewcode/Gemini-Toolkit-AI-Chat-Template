@@ -152,6 +152,13 @@ interface CodeBlockProps {
 
 const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, isComplete, onPreview }) => {
     const [copied, setCopied] = useState(false);
+    const codeRef = useRef<HTMLElement>(null);
+
+    useEffect(() => {
+        if (codeRef.current && isComplete && (window as any).hljs) {
+            (window as any).hljs.highlightElement(codeRef.current);
+        }
+    }, [code, language, isComplete]);
 
     const handleCopy = () => {
         navigator.clipboard.writeText(code).then(() => {
@@ -159,9 +166,16 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, isComplete, onPre
             setTimeout(() => setCopied(false), 2000);
         });
     };
+    
+    const isPreviewable = useMemo(() => 
+        ['jsx', 'html', 'python', 'python-api', 'javascript'].includes(language), 
+        [language]
+    );
 
     const handlePreview = () => {
-        onPreview(code, language);
+        if (isPreviewable) {
+            onPreview(code, language);
+        }
     };
     
     const languageDisplayMap: { [key: string]: string } = {
@@ -169,6 +183,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, isComplete, onPre
         html: 'HTML',
         python: 'Python',
         'python-api': 'Python API',
+        javascript: 'JavaScript',
     };
     const displayName = languageDisplayMap[language] || language;
 
@@ -192,18 +207,20 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, isComplete, onPre
     }
 
     return (
-        <div className="bg-black/50 rounded-lg my-4 relative border border-border">
+        <div className="bg-black/50 rounded-lg my-4 relative border border-border text-sm">
              <div className="flex items-center justify-between py-1 pr-1 pl-4 border-b border-border">
                 <span className="text-xs text-text-tertiary font-mono">{displayName}</span>
                 <div className="flex items-center gap-1">
-                    <button
-                        onClick={handlePreview}
-                        className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors p-1 rounded-md"
-                        aria-label="Preview code in sandbox"
-                    >
-                        <EyeIcon className="w-4 h-4" />
-                        Preview
-                    </button>
+                    {isPreviewable && (
+                        <button
+                            onClick={handlePreview}
+                            className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors p-1 rounded-md"
+                            aria-label="Preview code in sandbox"
+                        >
+                            <EyeIcon className="w-4 h-4" />
+                            Preview
+                        </button>
+                    )}
                     <button 
                         onClick={handleCopy} 
                         className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors p-1 rounded-md"
@@ -214,9 +231,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, isComplete, onPre
                     </button>
                 </div>
             </div>
-            <pre className="p-4 text-sm text-text-primary/90 overflow-x-auto">
-                <code>{code}</code>
-            </pre>
+            <pre className="p-4 overflow-x-auto"><code ref={codeRef} className={`language-${language}`}>{code}</code></pre>
         </div>
     );
 };
@@ -338,7 +353,7 @@ export const ChatMessage: React.FC<{ message: Message, onPreviewCode: (code: str
       const parts = displayedText.split(/(```[\s\S]*?```)/g);
       
       return parts.map((part, index) => {
-          const codeMatch = part.match(/```([\w-]+)?\n?([\s\S]*?)```/);
+          const codeMatch = part.match(/```([\w.-]+)?\n?([\s\S]*?)```/);
           if (codeMatch) {
               const language = codeMatch[1] || 'text';
               const code = codeMatch[2] || '';

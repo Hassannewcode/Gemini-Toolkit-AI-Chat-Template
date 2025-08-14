@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, Html5Icon, ReactIcon, PythonIcon, ComputerDesktopIcon, DevicePhoneMobileIcon, DeviceTabletIcon, RefreshIcon, RotateCwIcon, ExpandIcon, CollapseIcon, CheckIcon } from './icons';
+import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, Html5Icon, ReactIcon, PythonIcon, ComputerDesktopIcon, DevicePhoneMobileIcon, DeviceTabletIcon, RefreshIcon, RotateCwIcon, ExpandIcon, CollapseIcon, CheckIcon, JavaScriptIcon } from './icons';
 import { analyzeAndFixCode } from '../services/geminiService';
 
 interface PreviewPanelProps {
@@ -12,30 +12,12 @@ interface PreviewPanelProps {
 declare global {
   interface Window {
     loadPyodide: (config: { indexURL: string }) => Promise<any>;
+    hljs: any;
   }
 }
 
 // --- Helper Functions and Types ---
-
-const buildSrcDoc = (code: string, language: string) => {
-  if (language === 'html') return code;
-  if (language === 'jsx') {
-    const codeBody = code.replace(/import\s+.*\s+from\s+['"].*['"];?/g, '').replace(/export\s+default\s+\w+;?/g, '');
-    
-    // More robust component detection
-    const componentMatches = [...codeBody.matchAll(/(?:function|class)\s+([A-Z]\w*)|const\s+([A-Z]\w*)\s*=\s*(?:function|\()/g)];
-    const componentNames = componentMatches.map(m => m[1] || m[2]).filter(Boolean);
-    const componentNameToRender = componentNames.length > 0 ? componentNames[componentNames.length - 1] : null;
-
-    const renderLogic = componentNameToRender ? `
-        try {
-          const container = document.getElementById('root');
-          const root = ReactDOM.createRoot(container);
-          root.render(React.createElement(${componentNameToRender}));
-        } catch(e) { console.error(e); }
-      ` : `<div style="padding: 20px; text-align: center; color: #888; font-family: sans-serif; font-size: 16px;"><strong>Error: Could not find a React component to render.</strong><br>Please ensure your file contains a component with a PascalCase name (e.g., <code>function MyComponent() {}</code>) that can be rendered.</div>`;
-
-    const consoleInterceptor = `
+const consoleInterceptor = `
       const formatArg = (arg) => {
         if (arg instanceof Error) {
           return \`Error: \${arg.message}\\n\${arg.stack}\`;
@@ -60,6 +42,32 @@ const buildSrcDoc = (code: string, language: string) => {
       window.addEventListener('error', e => postMsg('error', [e.message, e.filename, e.lineno]));
       window.addEventListener('unhandledrejection', e => postMsg('error', ['Unhandled Promise Rejection:', e.reason]));
     `;
+    
+const buildSrcDoc = (code: string, language: string) => {
+  if (language === 'html') return code;
+  if (language === 'javascript') {
+    return `<!DOCTYPE html><html><head>
+        <style>body { font-family: sans-serif; margin: 0; background-color: white; color: black; }</style>
+    </head><body><div id="root"></div><script>
+        (function() { ${consoleInterceptor}; ${code}; })();
+    </script></body></html>`;
+  }
+  if (language === 'jsx') {
+    const codeBody = code.replace(/import\s+.*\s+from\s+['"].*['"];?/g, '').replace(/export\s+default\s+\w+;?/g, '');
+    
+    // More robust component detection
+    const componentMatches = [...codeBody.matchAll(/(?:function|class)\s+([A-Z]\w*)|const\s+([A-Z]\w*)\s*=\s*(?:function|\()/g)];
+    const componentNames = componentMatches.map(m => m[1] || m[2]).filter(Boolean);
+    const componentNameToRender = componentNames.length > 0 ? componentNames[componentNames.length - 1] : null;
+
+    const renderLogic = componentNameToRender ? `
+        try {
+          const container = document.getElementById('root');
+          const root = ReactDOM.createRoot(container);
+          root.render(React.createElement(${componentNameToRender}));
+        } catch(e) { console.error(e); }
+      ` : `<div style="padding: 20px; text-align: center; color: #888; font-family: sans-serif; font-size: 16px;"><strong>Error: Could not find a React component to render.</strong><br>Please ensure your file contains a component with a PascalCase name (e.g., <code>function MyComponent() {}</code>) that can be rendered.</div>`;
+
     return `<!DOCTYPE html><html><head>
         <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
         <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -231,7 +239,8 @@ const AnalysisNotification: React.FC<{
 
 export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onClose, onCodeUpdate }) => {
   const isPython = language === 'python' || language === 'python-api';
-  const initialTab: ActiveTab = isPython ? 'editor' : 'preview';
+  const isWebPreview = ['html', 'jsx', 'javascript'].includes(language);
+  const initialTab: ActiveTab = isWebPreview ? 'preview' : 'editor';
 
   const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab);
   const [editorCode, setEditorCode] = useState(code);
@@ -250,7 +259,7 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
   const [isPanelFullscreen, setIsPanelFullscreen] = useState(false);
   
   const [fixableError, setFixableError] = useState<FixableError | null>(null);
-  const [analysis, setAnalysis] = useState<{ explanation: string, fixedCode: string } | null>(null);
+  const [analysis, setAnalysis] = useState<{ explanation: string; fixedCode: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const hasAutoRun = useRef(false);
@@ -295,10 +304,10 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
   
   useEffect(() => {
     const handler = setTimeout(() => {
-      if (language === 'jsx' || language === 'html') setSrcDoc(buildSrcDoc(editorCode, language));
+      if (isWebPreview) setSrcDoc(buildSrcDoc(editorCode, language));
     }, 250);
     return () => clearTimeout(handler);
-  }, [editorCode, language]);
+  }, [editorCode, language, isWebPreview]);
 
   useEffect(() => {
     const handleIframeMessages = (event: MessageEvent) => {
@@ -447,9 +456,10 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
     switch (language) {
         case 'jsx': return { icon: <ReactIcon className="w-5 h-5 text-[#61DAFB]" />, name: 'component.jsx' };
         case 'html': return { icon: <Html5Icon className="w-5 h-5 text-[#E34F26]" />, name: 'index.html' };
+        case 'javascript': return { icon: <JavaScriptIcon className="w-5 h-5 text-[#F7DF1E]" />, name: 'script.js' };
         case 'python': return { icon: <PythonIcon className="w-5 h-5 text-[#3776AB]" />, name: 'script.py' };
         case 'python-api': return { icon: <PythonIcon className="w-5 h-5 text-[#3776AB]" />, name: 'api.py' };
-        default: return { icon: <CodeBracketIcon className="w-5 h-5" />, name: 'code' };
+        default: return { icon: <CodeBracketIcon className="w-5 h-5" />, name: `source.${language}` };
     }
   }, [language]);
 
@@ -491,7 +501,7 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
 
         <nav className="flex items-stretch px-2 border-b border-border bg-surface">
             <TabButton tab="editor"><CodeBracketIcon className="w-4 h-4"/> Editor</TabButton>
-            <TabButton tab="preview" disabled={isPython}><EyeIcon className="w-4 h-4" /> Preview</TabButton>
+            <TabButton tab="preview" disabled={!isWebPreview}><EyeIcon className="w-4 h-4" /> Preview</TabButton>
             <TabButton tab="console"><TerminalIcon className="w-4 h-4" /> Console</TabButton>
             {language === 'python-api' && <TabButton tab="api"><BoltIcon className="w-4 h-4" /> API Runner</TabButton>}
         </nav>
@@ -501,7 +511,7 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
                 <textarea value={editorCode} onChange={handleEditorChange} onBlur={() => onCodeUpdate(editorCode)} className="w-full h-full bg-transparent text-text-primary p-4 resize-none font-mono text-sm leading-6 focus:outline-none" spellCheck="false" aria-label="Code Editor"/>
             )}
             
-            {activeTab === 'preview' && !isPython && (
+            {activeTab === 'preview' && isWebPreview && (
               <div className="flex flex-col h-full bg-background">
                   <div className="flex items-center gap-3 p-1.5 border-b border-border bg-surface flex-shrink-0">
                       <div className="flex items-center gap-1 p-0.5 bg-background rounded-md border border-border">
