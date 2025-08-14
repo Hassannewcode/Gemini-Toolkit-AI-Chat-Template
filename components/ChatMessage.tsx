@@ -1,8 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Message, Sender, AIStatus } from '../types';
-import { UserIcon, SparklesIcon, CopyIcon, CheckIcon } from './icons';
+import { UserIcon, SparklesIcon, CopyIcon, CheckIcon, CodeBracketIcon, EyeIcon } from './icons';
 
-const CodeBlock: React.FC<{ code: string }> = ({ code }) => {
+// --- Sub-components ---
+
+const BlinkingCursor: React.FC = () => (
+    <span className="inline-block w-2 h-4 bg-accent animate-blink" />
+);
+
+interface CodeBlockProps {
+    code: string;
+    language: string;
+    isComplete: boolean;
+    onPreview: (code: string, language: string) => void;
+}
+
+const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, isComplete, onPreview }) => {
     const [copied, setCopied] = useState(false);
 
     const handleCopy = () => {
@@ -12,17 +25,59 @@ const CodeBlock: React.FC<{ code: string }> = ({ code }) => {
         });
     };
 
+    const handlePreview = () => {
+        onPreview(code, language);
+    };
+    
+    const languageDisplayMap: { [key: string]: string } = {
+        jsx: 'React (JSX)',
+        html: 'HTML',
+        python: 'Python',
+        'python-api': 'Python API',
+    };
+    const displayName = languageDisplayMap[language] || language;
+
+    if (!isComplete) {
+        return (
+            <div className="bg-black/50 rounded-lg my-4 relative border border-border">
+                <div className="flex items-center gap-2 p-3 border-b border-border">
+                    <CodeBracketIcon className="w-4 h-4 text-text-tertiary" />
+                    <span className="text-sm text-text-secondary">{displayName}</span>
+                </div>
+                <div className="p-4">
+                    <div className="flex items-center space-x-2 animate-pulse-fast">
+                        <div className="w-2 h-2 bg-text-tertiary rounded-full"></div>
+                        <div className="w-2 h-2 bg-text-tertiary rounded-full animation-delay-200"></div>
+                        <div className="w-2 h-2 bg-text-tertiary rounded-full animation-delay-400"></div>
+                        <span className="text-sm text-text-tertiary">Generating code...</span>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     return (
-        <div className="bg-black/50 rounded-lg my-2 relative border border-border">
-            <div className="flex justify-end p-2 border-b border-border">
-                <button 
-                    onClick={handleCopy} 
-                    className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
-                    aria-label={copied ? "Copied code" : "Copy code"}
-                >
-                    {copied ? <CheckIcon className="w-4 h-4 text-green-500" /> : <CopyIcon className="w-4 h-4" />}
-                    {copied ? 'Copied!' : 'Copy code'}
-                </button>
+        <div className="bg-black/50 rounded-lg my-4 relative border border-border">
+             <div className="flex items-center justify-between py-1 pr-1 pl-4 border-b border-border">
+                <span className="text-xs text-text-tertiary font-mono">{displayName}</span>
+                <div className="flex items-center gap-1">
+                    <button
+                        onClick={handlePreview}
+                        className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors p-1 rounded-md"
+                        aria-label="Preview code in sandbox"
+                    >
+                        <EyeIcon className="w-4 h-4" />
+                        Preview
+                    </button>
+                    <button 
+                        onClick={handleCopy} 
+                        className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors p-1 rounded-md"
+                        aria-label={copied ? "Copied code" : "Copy code"}
+                    >
+                        {copied ? <CheckIcon className="w-4 h-4 text-green-500" /> : <CopyIcon className="w-4 h-4" />}
+                        {copied ? 'Copied!' : 'Copy'}
+                    </button>
+                </div>
             </div>
             <pre className="p-4 text-sm text-text-primary/90 overflow-x-auto">
                 <code>{code}</code>
@@ -31,30 +86,135 @@ const CodeBlock: React.FC<{ code: string }> = ({ code }) => {
     );
 };
 
-const ThinkingPlaceholder: React.FC = () => (
-  <div className="flex items-center space-x-2 animate-pulse-fast">
-    <div className="w-2 h-2 bg-text-tertiary rounded-full"></div>
-    <div className="w-2 h-2 bg-text-tertiary rounded-full animation-delay-200"></div>
-    <div className="w-2 h-2 bg-text-tertiary rounded-full animation-delay-400"></div>
-  </div>
+const ChatMessageSkeleton: React.FC = () => (
+    <div className={`flex items-start gap-4 animate-slide-in`}>
+        <div className="flex-shrink-0 mt-1">
+             <div className="w-7 h-7 rounded-full flex items-center justify-center bg-surface text-accent border border-border">
+                <SparklesIcon className="w-4 h-4" />
+            </div>
+        </div>
+        <div className="flex-1 pt-0.5 animate-pulse-fast space-y-2">
+            <div className="h-4 bg-surface rounded-md w-3/4"></div>
+            <div className="h-4 bg-surface rounded-md w-1/2"></div>
+        </div>
+    </div>
 );
 
-export const ChatMessage: React.FC<{ message: Message }> = ({ message }) => {
-  const isUser = message.sender === Sender.User;
+const MarkdownText: React.FC<{ text: string }> = ({ text }) => {
+  const elements: React.ReactNode[] = [];
+  const lines = text.split('\n');
 
-  const formattedText = message.text.split(/(```[\s\S]*?```)/g).map((part, index) => {
-    const codeMatch = part.match(/```(?:[\w-]+)?\n([\s\S]*?)```/);
-    if (codeMatch && codeMatch[1]) {
-      return <CodeBlock key={index} code={codeMatch[1]} />;
+  let listItems: React.ReactNode[] = [];
+
+  const flushList = () => {
+    if (listItems.length > 0) {
+      elements.push(<ul key={`ul-${elements.length}`} className="list-disc list-inside space-y-1 my-2 pl-4">{listItems}</ul>);
+      listItems = [];
     }
-    if (!part.startsWith('```') && part.trim()) {
-        return part.split('\n').map((line, i) => (
-            <p key={`${index}-${i}`}>{line}</p>
-        ));
+  };
+
+  const applyInlineFormatting = (textLine: string) => {
+    const parts = textLine.split(/(\*\*.*?\*\*|__.*?__|`.*?`|~~.*?~~|\*.*?\*|_.*?_)/g);
+    return parts.filter(part => part).map((part, i) => {
+      if ((part.startsWith('**') && part.endsWith('**')) || (part.startsWith('__') && part.endsWith('__'))) {
+        return <strong key={i}>{part.slice(2, -2)}</strong>;
+      }
+      if ((part.startsWith('*') && part.endsWith('*')) || (part.startsWith('_') && part.endsWith('_'))) {
+        return <em key={i}>{part.slice(1, -1)}</em>;
+      }
+      if (part.startsWith('~~') && part.endsWith('~~')) {
+        return <s key={i}>{part.slice(2, -2)}</s>;
+      }
+      if (part.startsWith('`') && part.endsWith('`')) {
+        return <code key={i} className="bg-surface px-1.5 py-1 rounded text-sm font-mono text-accent">{part.slice(1, -1)}</code>;
+      }
+      return part;
+    });
+  };
+
+  lines.forEach((line, lineIndex) => {
+    const listMatch = line.match(/^(\s*)(\*|-)\s+(.*)/);
+    if (listMatch) {
+      const [, , , listItemContent] = listMatch;
+      listItems.push(<li key={`li-${lineIndex}`}>{applyInlineFormatting(listItemContent)}</li>);
+      return;
+    } 
+    
+    flushList();
+    
+    if (line.startsWith('# ')) {
+      elements.push(<h1 key={lineIndex} className="text-2xl font-bold mt-6 mb-2">{applyInlineFormatting(line.substring(2))}</h1>);
+    } else if (line.startsWith('## ')) {
+      elements.push(<h2 key={lineIndex} className="text-xl font-semibold mt-5 mb-2">{applyInlineFormatting(line.substring(3))}</h2>);
+    } else if (line.startsWith('### ')) {
+      elements.push(<h3 key={lineIndex} className="text-lg font-semibold mt-4 mb-2">{applyInlineFormatting(line.substring(4))}</h3>);
+    } else if (line.trim() === '---') {
+      elements.push(<hr key={lineIndex} className="border-border my-4" />);
+    } else if (line.startsWith('> ')) {
+      elements.push(<blockquote key={lineIndex} className="border-l-4 border-border pl-4 my-2 text-text-secondary italic">{applyInlineFormatting(line.substring(2))}</blockquote>);
+    } else if (line.trim() !== '') {
+      elements.push(<p key={lineIndex}>{applyInlineFormatting(line)}</p>);
+    } else {
+      elements.push(<div key={lineIndex} className="h-4" />);
     }
-    return null;
   });
-  
+
+  flushList();
+
+  return <>{elements}</>;
+};
+
+
+// --- Custom Hooks ---
+
+function useTypewriter(text: string, isStreaming: boolean) {
+    const [displayedText, setDisplayedText] = useState('');
+
+    useEffect(() => {
+        if (!isStreaming) {
+            setDisplayedText(text);
+            return;
+        }
+
+        let timeoutId: NodeJS.Timeout;
+        if (displayedText.length < text.length) {
+            timeoutId = setTimeout(() => {
+                setDisplayedText(text.slice(0, displayedText.length + 1));
+            }, 10);
+        }
+
+        return () => clearTimeout(timeoutId);
+    }, [text, displayedText, isStreaming]);
+
+    return displayedText;
+}
+
+// --- Main Component ---
+
+export const ChatMessage: React.FC<{ message: Message, onPreviewCode: (code: string, language: string) => void }> = ({ message, onPreviewCode }) => {
+  const isUser = message.sender === Sender.User;
+  const isStreaming = message.status === AIStatus.Generating && !isUser;
+  const displayedText = useTypewriter(message.text, isStreaming);
+
+  const content = useMemo(() => {
+      const parts = displayedText.split(/(```[\s\S]*?```)/g);
+      
+      return parts.map((part, index) => {
+          const codeMatch = part.match(/```([\w-]+)?\n?([\s\S]*?)```/);
+          if (codeMatch) {
+              const language = codeMatch[1] || 'text';
+              const code = codeMatch[2] || '';
+              const isPartComplete = message.text.includes(part);
+              return <CodeBlock key={index} language={language} code={code} isComplete={isPartComplete} onPreview={onPreviewCode} />;
+          }
+          if (part.trim()) {
+              return <MarkdownText key={index} text={part} />;
+          }
+          return null;
+      });
+  }, [displayedText, message.text, onPreviewCode]);
+
+
   const icon = isUser ? (
       <div className="w-7 h-7 rounded-full flex items-center justify-center bg-surface text-text-secondary border border-border">
         <UserIcon className="w-4 h-4" />
@@ -65,7 +225,11 @@ export const ChatMessage: React.FC<{ message: Message }> = ({ message }) => {
       </div>
   );
   
-  const showThinkingPlaceholder = message.text.length === 0 && message.status && [AIStatus.Thinking, AIStatus.Searching, AIStatus.Generating].includes(message.status);
+  const showSkeleton = message.text.length === 0 && message.status && [AIStatus.Thinking].includes(message.status);
+
+  if (showSkeleton) {
+      return <ChatMessageSkeleton />;
+  }
 
   return (
     <div className={`flex items-start gap-4 animate-slide-in`}>
@@ -74,9 +238,12 @@ export const ChatMessage: React.FC<{ message: Message }> = ({ message }) => {
       </div>
       <div className="flex-1 pt-0.5">
         <div className="text-text-primary/90 space-y-4 leading-relaxed">
-            {formattedText}
-            {showThinkingPlaceholder && <ThinkingPlaceholder />}
+            {content}
+            {isStreaming && <BlinkingCursor />}
         </div>
+        {message.status === AIStatus.Error && (
+            <p className="text-red-400 text-sm mt-2">An error occurred. Please try again.</p>
+        )}
       </div>
     </div>
   );

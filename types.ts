@@ -23,4 +23,8 @@ export interface Chat {
   id: string;
   title: string;
   messages: Message[];
+  sandboxState?: {
+    code: string;
+    language: string;
+  } | null;
 }
