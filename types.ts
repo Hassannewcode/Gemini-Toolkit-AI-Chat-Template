@@ -25,6 +25,7 @@ export interface Message {
   } | null;
   attachments?: { name: string; type: string; data: string; }[];
   files?: { filename: string; content: string; }[];
+  groundingMetadata?: any;
 }
 
 export interface Chat {

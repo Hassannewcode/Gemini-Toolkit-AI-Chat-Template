@@ -1,8 +1,8 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { SendIcon, StopIcon, PaperclipIcon, XMarkIcon } from './icons';
+import { SendIcon, StopIcon, PaperclipIcon, XMarkIcon, SearchIcon } from './icons';
 
 interface ChatInputProps {
-  onSendMessage: (text: string, files: File[]) => void;
+  onSendMessage: (text: string, files: File[], isSearchActive: boolean) => void;
   onStop: () => void;
   isStreaming: boolean;
 }
@@ -10,15 +10,17 @@ interface ChatInputProps {
 export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isStreaming }) => {
   const [text, setText] = useState('');
   const [files, setFiles] = useState<File[]>([]);
+  const [isSearchActive, setIsSearchActive] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleSend = useCallback(() => {
     if (isStreaming || (!text.trim() && files.length === 0)) return;
-    onSendMessage(text, files);
+    onSendMessage(text, files, isSearchActive);
     setText('');
     setFiles([]);
-  }, [isStreaming, text, files, onSendMessage]);
+    setIsSearchActive(false);
+  }, [isStreaming, text, files, isSearchActive, onSendMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -34,6 +36,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isS
     // Reset file input to allow selecting the same file again
     event.target.value = '';
   };
+
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
+    if (isStreaming) return;
+    if (e.clipboardData.files && e.clipboardData.files.length > 0) {
+      e.preventDefault();
+      const pastedFiles = Array.from(e.clipboardData.files);
+      setFiles(prev => [...prev, ...pastedFiles].slice(0, 20));
+    }
+  }, [isStreaming]);
 
   const handleRemoveFile = (index: number) => {
     setFiles(prev => prev.filter((_, i) => i !== index));
@@ -63,7 +74,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isS
   }
 
   return (
-    <div className="bg-surface rounded-xl border border-border focus-within:ring-2 focus-within:ring-accent/50 animate-fade-in">
+    <div onPaste={handlePaste} className="bg-surface rounded-xl border border-border focus-within:ring-2 focus-within:ring-accent/50 animate-fade-in">
       {files.length > 0 && (
         <div className="p-2 border-b border-border">
           <div className="flex flex-wrap gap-2">
@@ -95,10 +106,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isS
           accept="image/*,text/*,.pdf,.csv,.json,.md,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
         />
         <button
+          onClick={() => setIsSearchActive(!isSearchActive)}
+          className={`p-2 rounded-full transition-colors ${isSearchActive ? 'bg-blue-500/20 text-blue-400' : 'enabled:hover:bg-accent-hover'}`}
+          aria-pressed={isSearchActive}
+          title="Toggle Web Search"
+          aria-label="Toggle Web Search"
+        >
+          <SearchIcon className="w-6 h-6" />
+        </button>
+        <button
           onClick={() => fileInputRef.current?.click()}
           disabled={isStreaming || files.length >= 20}
           className="p-2 rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed enabled:hover:bg-accent-hover"
           aria-label="Attach file"
+          title="Attach file"
         >
           <PaperclipIcon className="w-6 h-6" />
         </button>
@@ -107,7 +128,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isS
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Send a message..."
+          placeholder={isSearchActive ? "Search the web or send a message..." : "Send a message, or paste a file..."}
           className="flex-1 bg-transparent resize-none p-2 text-text-primary placeholder-text-secondary focus:outline-none"
           rows={1}
           disabled={isStreaming}

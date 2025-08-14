@@ -83,7 +83,7 @@ const App: React.FC = () => {
     }
   }, [activeChatId]);
 
-  const handleSendMessage = useCallback(async (text: string, files: File[]) => {
+  const handleSendMessage = useCallback(async (text: string, files: File[], isSearchActive: boolean) => {
     if (!text.trim() && files.length === 0) return;
     
     handleStop();
@@ -102,13 +102,27 @@ const App: React.FC = () => {
                         const blob = await zipFile.async('blob');
                         
                         const getMimeType = (name: string): string => {
-                          const ext = name.split('.').pop()?.toLowerCase();
+                          const ext = name.split('.').pop()?.toLowerCase() || '';
                           const mimeTypes: { [key: string]: string } = {
+                            // Text
                             'txt': 'text/plain', 'html': 'text/html', 'css': 'text/css', 'js': 'application/javascript',
                             'json': 'application/json', 'xml': 'application/xml', 'md': 'text/markdown',
-                            'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif', 'svg': 'image/svg+xml'
+                            // Images
+                            'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif', 'svg': 'image/svg+xml', 'webp': 'image/webp',
+                            // Documents
+                            'pdf': 'application/pdf',
+                            'doc': 'application/msword',
+                            'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                            'xls': 'application/vnd.ms-excel',
+                            'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                            'ppt': 'application/vnd.ms-powerpoint',
+                            'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                            // Archives
+                            'zip': 'application/zip',
+                            // Others
+                            'csv': 'text/csv',
                           };
-                          return mimeTypes[ext || ''] || 'application/octet-stream';
+                          return mimeTypes[ext] || 'application/octet-stream';
                         }
 
                         const newFile = new File([blob], `${file.name}/${filename}`, { type: getMimeType(filename) });
@@ -125,12 +139,12 @@ const App: React.FC = () => {
     }
     
     const filePromises = expandedFiles.map(file => {
-      return new Promise<{ name: string; type: string; dataUrl: string; base64Data: string }>((resolve, reject) => {
+      return new Promise<{ name: string; type: string; dataUrl: string; base64Data: string; size: number; }>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => {
           const dataUrl = e.target?.result as string;
           const base64Data = dataUrl.split(',')[1];
-          resolve({ name: file.name, type: file.type, dataUrl, base64Data });
+          resolve({ name: file.name, type: file.type, dataUrl, base64Data, size: file.size });
         };
         reader.onerror = reject;
         reader.readAsDataURL(file);
@@ -155,6 +169,7 @@ const App: React.FC = () => {
       timestamp: Date.now(),
       status: AIStatus.Thinking,
       reasoning: null,
+      groundingMetadata: null,
     };
     
     let tempActiveChatId = activeChatId;
@@ -186,37 +201,49 @@ const App: React.FC = () => {
       const chat = chats.find(c => c.id === chatId);
       return (chat?.messages.slice(0, -2) ?? []).map(msg => ({
         role: msg.sender === Sender.User ? 'user' : 'model',
-        parts: [{ text: msg.text }]
+        parts: [{ text: msg.text }] // Note: This simplified history does not include attachments from past messages.
       }));
     };
     
     const history = isNewChat ? [] : getHistory(tempActiveChatId);
+    
     const geminiAttachments: Part[] = processedFiles.map(f => ({
       inlineData: { mimeType: f.type, data: f.base64Data }
     }));
 
+    const promptPayload = {
+        query: text,
+        files: processedFiles.map(f => ({ filename: f.name, type: f.type, size: f.size })),
+    };
+    const promptJson = JSON.stringify(promptPayload, null, 2);
+
     try {
-      const stream = generateResponseStream(text, history, geminiAttachments, controller.signal);
+      const stream = generateResponseStream(promptJson, history, geminiAttachments, controller.signal, isSearchActive);
       
       let reasoningData: any = null;
       let buffer = '';
       let isReasoningFound = false;
+      let groundingMetadata: any = null;
 
-      for await (const chunkText of stream) {
+      for await (const chunk of stream) {
         if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
         
-        buffer += chunkText;
+        buffer += chunk.text;
+        
+        if (chunk.groundingMetadata) {
+            groundingMetadata = chunk.groundingMetadata;
+        }
+
         let currentStatus = currentAIStatus;
         let textToSet = buffer;
 
         if (!isReasoningFound) {
-          const reasoningEndIndex = buffer.indexOf('</reasoning>');
-          if (reasoningEndIndex !== -1) {
-            const reasoningStartIndex = buffer.indexOf('<reasoning>');
-            if (reasoningStartIndex !== -1) {
+            const reasoningRegex = /<reasoning>([\s\S]*?)<\/reasoning>/;
+            const reasoningMatch = buffer.match(reasoningRegex);
+          
+            if (reasoningMatch) {
+              const reasoningBlock = reasoningMatch[1];
               try {
-                const reasoningBlock = buffer.substring(reasoningStartIndex + 11, reasoningEndIndex);
-                
                 const thoughtMatch = reasoningBlock.match(/<thought>([\s\S]*?)<\/thought>/);
                 const critiqueMatch = reasoningBlock.match(/<critique>([\s\S]*?)<\/critique>/);
                 const planMatch = reasoningBlock.match(/<plan>([\s\S]*?)<\/plan>/);
@@ -228,24 +255,30 @@ const App: React.FC = () => {
                 reasoningData = { thought, critique, plan };
                 isReasoningFound = true;
                 currentStatus = AIStatus.Generating;
-                textToSet = buffer.substring(reasoningEndIndex + 12).trimStart();
+                textToSet = buffer.replace(reasoningRegex, '').trimStart();
                 setCurrentAIStatus(AIStatus.Generating);
               } catch (e) {
                 console.error("Failed to parse reasoning block", e);
                 isReasoningFound = true; // Stop trying
                 setCurrentAIStatus(AIStatus.Generating);
+                textToSet = buffer.replace(reasoningRegex, '').trimStart(); // Still remove the block
               }
-            } else if (buffer.length > 200) { // Failsafe
+            } else if (buffer.length > 1000 && !buffer.includes('<reasoning>')) { // Failsafe
                 isReasoningFound = true;
                 setCurrentAIStatus(AIStatus.Generating);
             }
-          }
         }
         
         setChats(prev => prev.map(chat => {
           if (chat.id === tempActiveChatId) {
             const updatedMessages = chat.messages.map(msg => 
-              msg.id === aiMessageId ? { ...msg, text: textToSet, reasoning: reasoningData ?? msg.reasoning, status: currentStatus } : msg
+              msg.id === aiMessageId ? { 
+                ...msg, 
+                text: textToSet, 
+                reasoning: reasoningData ?? msg.reasoning, 
+                status: currentStatus,
+                groundingMetadata: groundingMetadata ?? msg.groundingMetadata,
+              } : msg
             );
             return { ...chat, messages: updatedMessages };
           }
@@ -406,7 +439,7 @@ const App: React.FC = () => {
             <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 md:p-6">
                <div className="max-w-3xl mx-auto space-y-8">
                 {messages.length === 0 ? (
-                  <WelcomeScreen onPromptClick={(prompt) => handleSendMessage(prompt, [])} />
+                  <WelcomeScreen onPromptClick={(prompt) => handleSendMessage(prompt, [], false)} />
                 ) : (
                   messages.map(msg => <ChatMessage key={msg.id} message={msg} onPreviewCode={handlePreviewCode} />)
                 )}

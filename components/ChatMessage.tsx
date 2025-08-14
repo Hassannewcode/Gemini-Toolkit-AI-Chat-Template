@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Message, Sender, AIStatus } from '../types';
-import { UserIcon, SparklesIcon, CopyIcon, CheckIcon, CodeBracketIcon, EyeIcon, BoltIcon, PlusIcon, PaperclipIcon } from './icons';
+import { UserIcon, SparklesIcon, CopyIcon, CheckIcon, CodeBracketIcon, EyeIcon, BoltIcon, PlusIcon, PaperclipIcon, SearchIcon } from './icons';
 
 // --- Custom Hooks ---
 
@@ -285,6 +285,48 @@ const MarkdownText: React.FC<{ text: string }> = ({ text }) => {
   return <>{elements}</>;
 };
 
+const GroundingCitations: React.FC<{ metadata: any }> = ({ metadata }) => {
+    const chunks = metadata?.groundingChunks;
+    if (!chunks || !Array.isArray(chunks) || chunks.length === 0) {
+        return null;
+    }
+
+    const citations = chunks
+        .map(chunk => chunk.web)
+        .filter(Boolean)
+        .reduce((acc: {uri: string, title: string}[], current) => { // Deduplicate by uri
+            if (!acc.find(item => item.uri === current.uri)) {
+                acc.push(current);
+            }
+            return acc;
+        }, []);
+    
+    if (citations.length === 0) return null;
+
+    return (
+        <div className="mt-6 border-t border-border pt-4">
+            <h4 className="text-sm font-semibold text-text-secondary mb-3 flex items-center gap-2">
+                <SearchIcon className="w-4 h-4"/>
+                Sources
+            </h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                {citations.map((cite, index) => (
+                    <a 
+                        key={index} 
+                        href={cite.uri} 
+                        target="_blank" 
+                        rel="noopener noreferrer" 
+                        className="block bg-surface p-2.5 rounded-lg hover:bg-accent-hover transition-colors group"
+                    >
+                        <p className="text-text-primary font-medium truncate group-hover:text-accent">{cite.title || new URL(cite.uri).hostname}</p>
+                        <p className="text-text-tertiary truncate">{cite.uri}</p>
+                    </a>
+                ))}
+            </div>
+        </div>
+    );
+};
+
 // --- Main Component ---
 
 export const ChatMessage: React.FC<{ message: Message, onPreviewCode: (code: string, language: string) => void }> = ({ message, onPreviewCode }) => {
@@ -340,6 +382,7 @@ export const ChatMessage: React.FC<{ message: Message, onPreviewCode: (code: str
                 {content}
                 <FileDownloads files={message.files} />
                 {isStreaming && message.text.length > 0 && <BlinkingCursor />}
+                {!isStreaming && message.groundingMetadata && <GroundingCitations metadata={message.groundingMetadata} />}
             </div>
         )}
         
