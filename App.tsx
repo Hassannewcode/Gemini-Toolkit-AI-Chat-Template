@@ -6,85 +6,145 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { Header } from './components/Header';
 import { AIStatus, Message, Sender, Chat, MenuItem } from './types';
 import { PreviewPanel } from './components/PreviewPanel';
-import { generateResponseStream } from './services/geminiService';
 import type { Part } from '@google/genai';
 import { ContextMenu } from './components/ContextMenu';
 import { BoltIcon, CopyIcon, PencilIcon, PlusIcon, RefreshIcon, ShareIcon, TrashIcon, XMarkIcon } from './components/icons';
+import { getAllChats, putChat, deleteChat, getChat } from './db';
 
 const App: React.FC = () => {
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
-  const [currentAIStatus, setCurrentAIStatus] = useState<AIStatus>(AIStatus.Idle);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
 
-  const abortControllerRef = useRef<AbortController | null>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    try {
-      const savedChats = localStorage.getItem('chats');
-      const savedActiveChatId = localStorage.getItem('activeChatId');
-      if (savedChats) {
-        setChats(JSON.parse(savedChats));
-        if (savedActiveChatId) {
-          setActiveChatId(savedActiveChatId);
-        }
+    // Register Service Worker
+    const registerServiceWorker = () => {
+      if ('serviceWorker' in navigator) {
+        // Construct a full URL to the service worker using the page's origin to prevent cross-origin registration errors
+        // that can occur in sandboxed environments like iframes.
+        const swUrl = `${window.location.origin}/service-worker.js`;
+        navigator.serviceWorker.register(swUrl, { type: 'module' }).then(
+            (registration) => {
+                console.log('Service Worker registration successful with scope: ', registration.scope);
+            },
+            (err) => {
+                console.log('Service Worker registration failed: ', err);
+            },
+        );
       }
-    } catch (e) {
-      console.error("Failed to load from localStorage", e);
-      localStorage.clear();
+    };
+
+    // Defer registration until after the page has fully loaded to avoid "invalid state" errors.
+    if (document.readyState === 'complete') {
+        registerServiceWorker();
+    } else {
+        window.addEventListener('load', registerServiceWorker);
     }
+
+    // Load initial data from DB
+    const loadData = async () => {
+        const dbChats = await getAllChats();
+        dbChats.sort((a, b) => {
+            const lastMessageA = a.messages[a.messages.length - 1];
+            const lastMessageB = b.messages[b.messages.length - 1];
+            return (lastMessageB?.timestamp || 0) - (lastMessageA?.timestamp || 0);
+        });
+        setChats(dbChats);
+        
+        if (dbChats.length > 0) {
+            const lastActive = localStorage.getItem('activeChatId');
+            if (lastActive && dbChats.some(c => c.id === lastActive)) {
+                setActiveChatId(lastActive);
+            } else {
+                setActiveChatId(dbChats[0].id);
+            }
+        }
+    };
+    loadData();
+
+    // Listen for updates from Service Worker
+    const channel = new BroadcastChannel('gemini-chat-channel');
+    const handleChannelMessage = async (event: MessageEvent) => {
+        if (event.data.type === 'UPDATE') {
+            const { chatId } = event.data;
+            const updatedChat = await getChat(chatId);
+            if (updatedChat) {
+                setChats(prevChats => {
+                    const index = prevChats.findIndex(c => c.id === chatId);
+                    if (index > -1) {
+                        const newChats = [...prevChats];
+                        newChats[index] = updatedChat;
+                        return newChats;
+                    }
+                    return [updatedChat, ...prevChats].sort((a, b) => {
+                        const lastMessageA = a.messages[a.messages.length - 1];
+                        const lastMessageB = b.messages[b.messages.length - 1];
+                        return (lastMessageB?.timestamp || 0) - (lastMessageA?.timestamp || 0);
+                    });
+                });
+            }
+        }
+    };
+    channel.addEventListener('message', handleChannelMessage);
+
+    return () => {
+        window.removeEventListener('load', registerServiceWorker);
+        channel.removeEventListener('message', handleChannelMessage);
+        channel.close();
+    };
   }, []);
 
   useEffect(() => {
-    try {
-      if (chats.length > 0) {
-        localStorage.setItem('chats', JSON.stringify(chats));
-      } else {
-        localStorage.removeItem('chats');
-      }
-      if (activeChatId) {
+    if (activeChatId) {
         localStorage.setItem('activeChatId', activeChatId);
-      } else {
+    } else {
         localStorage.removeItem('activeChatId');
-      }
-    } catch(e) {
-      console.error("Failed to save to localStorage", e);
     }
-  }, [chats, activeChatId]);
+  }, [activeChatId]);
   
+  const activeChat = chats.find(chat => chat.id === activeChatId);
+
   useEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
-  }, [chats, activeChatId, currentAIStatus]);
+  }, [activeChat?.messages.length, activeChat?.messages[activeChat.messages.length - 1]?.text.length]);
   
+  const lastMessage = activeChat?.messages[activeChat.messages.length - 1];
+  const currentAIStatus = (lastMessage?.sender === Sender.AI && lastMessage.status) ? lastMessage.status : AIStatus.Idle;
+  const isStreaming = currentAIStatus !== AIStatus.Idle && currentAIStatus !== AIStatus.Error;
+
   const handleStop = useCallback(() => {
-    if(abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-    setCurrentAIStatus(AIStatus.Idle);
-    setChats(prev => prev.map(chat => {
-        if (chat.id === activeChatId) {
-            return {
-                ...chat,
-                messages: chat.messages.map(msg => msg.status ? { ...msg, status: AIStatus.Idle } : msg)
-            };
+    const lastAiMessage = activeChat?.messages.slice().reverse().find(m => m.sender === Sender.AI);
+    if (lastAiMessage && lastAiMessage.status && lastAiMessage.status !== AIStatus.Idle && activeChat) {
+      navigator.serviceWorker.controller?.postMessage({
+        type: 'STOP_GENERATION',
+        payload: {
+            aiMessageId: lastAiMessage.id
         }
-        return chat;
-    }));
-  }, [activeChatId]);
+      });
+      // Optimistic update
+      const updatedChat = {
+          ...activeChat,
+          messages: activeChat.messages.map(msg => msg.id === lastAiMessage.id ? { ...msg, status: AIStatus.Idle } : msg)
+      };
+      putChat(updatedChat);
+      setChats(prev => prev.map(c => c.id === activeChat.id ? updatedChat : c));
+    }
+  }, [activeChat]);
   
-  const activeChat = chats.find(chat => chat.id === activeChatId);
-  
-  const setSandboxState = useCallback((state: Chat['sandboxState']) => {
+  const setSandboxState = useCallback(async (state: Chat['sandboxState']) => {
     if (activeChatId) {
-        setChats(prev => prev.map(chat => 
-            chat.id === activeChatId ? { ...chat, sandboxState: state } : chat
-        ));
+      const chat = await getChat(activeChatId);
+      if (chat) {
+        const updatedChat = { ...chat, sandboxState: state };
+        await putChat(updatedChat);
+        setChats(prev => prev.map(c => c.id === activeChatId ? updatedChat : c));
+      }
     }
   }, [activeChatId]);
 
@@ -94,12 +154,15 @@ const App: React.FC = () => {
     isSearchActive: boolean,
     isSystemMessage: boolean = false
   ) => {
-    if (!text.trim() && attachments.length === 0) return;
+    if ((!text.trim() && attachments.length === 0) || !navigator.serviceWorker.controller) {
+        if (!navigator.serviceWorker.controller) {
+            console.error("Service worker not ready, please wait a moment and try again.");
+            // Optionally show a toast notification to the user
+        }
+        return;
+    }
     
     handleStop();
-    
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
 
     const userMessage: Message = {
       id: `user-${Date.now()}`,
@@ -120,29 +183,30 @@ const App: React.FC = () => {
     };
     
     let tempActiveChatId = activeChatId;
+    let newChat: Chat | null = null;
     const chatTitle = text.length > 30 ? text.substring(0, 27) + '...' : text || 'New Chat';
 
     if (!tempActiveChatId) {
         tempActiveChatId = `chat-${Date.now()}`;
-        const newChat: Chat = {
+        newChat = {
             id: tempActiveChatId,
             title: isSystemMessage ? 'Auto-Fix Analysis' : chatTitle,
             messages: [userMessage, initialAIMessage],
         };
-        setChats(prev => [newChat, ...prev]);
         setActiveChatId(tempActiveChatId);
-    } else {
-        setChats(prev => prev.map(chat => 
-            chat.id === tempActiveChatId 
-                ? { ...chat, messages: [...chat.messages, userMessage, initialAIMessage] } 
-                : chat
-        ));
-    }
+    } 
+
+    const finalMessages = newChat ? newChat.messages : [...(activeChat?.messages || []), userMessage, initialAIMessage];
+    const chatToSave = newChat || { ...activeChat!, messages: finalMessages };
     
-    setCurrentAIStatus(AIStatus.Thinking);
+    setChats(prev => {
+        if (newChat) return [newChat, ...prev];
+        return prev.map(c => c.id === tempActiveChatId ? chatToSave : c);
+    });
+
+    await putChat(chatToSave);
     
-    const currentChat = chats.find(c => c.id === tempActiveChatId) || { messages: [] };
-    const history = currentChat.messages.slice(0, -2).map(msg => ({
+    const history = finalMessages.slice(0, -2).map(msg => ({
         role: msg.sender === Sender.User ? 'user' : 'model',
         parts: [{ text: msg.text }]
     }));
@@ -156,154 +220,20 @@ const App: React.FC = () => {
         files: attachments.map(f => ({ filename: f.name, type: f.type, size: f.size })),
     };
     const promptJson = JSON.stringify(promptPayload, null, 2);
-
-    const reasoningRegex = /<reasoning>([\s\S]*?)<\/reasoning>/;
-
-    const startTime = Date.now();
-    let stageTimers = { start: startTime, step1: 0, step2: 0, step3: 0, endReasoning: 0 };
-    let timingResults: { [key: string]: number } = {};
-
-    try {
-      const stream = generateResponseStream(promptJson, history, geminiAttachments, controller.signal, isSearchActive);
-      
-      let buffer = '';
-      let reasoningData: any = null;
-      let groundingMetadata: any = null;
-      let isReasoningFound = false;
-
-      for await (const chunk of stream) {
-        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-        
-        buffer += chunk.text;
-        if (chunk.groundingMetadata) {
-            groundingMetadata = chunk.groundingMetadata;
+    
+    navigator.serviceWorker.controller.postMessage({
+        type: 'START_GENERATION',
+        payload: {
+            chatId: tempActiveChatId,
+            aiMessageId,
+            prompt: promptJson,
+            history,
+            attachments: geminiAttachments,
+            isSearchActive
         }
+    });
 
-        let currentStatus = AIStatus.Thinking;
-        
-        if (!isReasoningFound) {
-            const now = Date.now();
-            if (stageTimers.step1 === 0 && buffer.includes('<step1_analyze_json_input>')) {
-                stageTimers.step1 = now;
-                timingResults.initialWait = (now - stageTimers.start) / 1000;
-            }
-            if (stageTimers.step2 === 0 && buffer.includes('<step2_reimagine_and_visualize>')) {
-                stageTimers.step2 = now;
-                if (stageTimers.step1 > 0) timingResults.step1 = (now - stageTimers.step1) / 1000;
-            }
-            if (stageTimers.step3 === 0 && buffer.includes('<step3_revise_and_plan>')) {
-                stageTimers.step3 = now;
-                if (stageTimers.step2 > 0) timingResults.step2 = (now - stageTimers.step2) / 1000;
-            }
-
-            const reasoningMatch = buffer.match(reasoningRegex);
-            if (reasoningMatch) {
-              if (stageTimers.endReasoning === 0) {
-                  stageTimers.endReasoning = now;
-                  if (stageTimers.step3 > 0) timingResults.step3 = (now - stageTimers.step3) / 1000;
-              }
-              const reasoningBlock = reasoningMatch[1];
-              try {
-                const step1Match = reasoningBlock.match(/<step1_analyze_json_input>([\s\S]*?)<\/step1_analyze_json_input>/);
-                const step2Match = reasoningBlock.match(/<step2_reimagine_and_visualize>([\s\S]*?)<\/step2_reimagine_and_visualize>/);
-                const step3Match = reasoningBlock.match(/<step3_revise_and_plan>([\s\S]*?)<\/step3_revise_and_plan>/);
-                
-                let plan = null;
-                if(step3Match) {
-                    const planMatch = step3Match[1].match(/<plan>([\s\S]*?)<\/plan>/);
-                    if (planMatch) {
-                        try {
-                            plan = JSON.parse(planMatch[1].trim());
-                        } catch(e) { console.error("failed to parse plan json", e); }
-                    }
-                }
-
-                reasoningData = { 
-                  step1_analyze_json_input: step1Match ? step1Match[1].trim() : '', 
-                  step2_reimagine_and_visualize: step2Match ? step2Match[1].trim() : '',
-                  step3_revise_and_plan: step3Match ? step3Match[1].replace(/<plan>[\s\S]*?<\/plan>/, '').trim() : '',
-                  plan: plan
-                };
-                isReasoningFound = true;
-
-              } catch (e) { /* ignore parsing errors */ }
-              currentStatus = AIStatus.Generating;
-              setCurrentAIStatus(AIStatus.Generating);
-            }
-        }
-        
-        const textToSet = isReasoningFound ? buffer.replace(reasoningRegex, '').trimStart() : buffer;
-        
-        setChats(prev => prev.map(chat => {
-          if (chat.id === tempActiveChatId) {
-            const updatedMessages = chat.messages.map(msg => 
-              msg.id === aiMessageId ? { ...msg, text: textToSet, reasoning: reasoningData, status: currentStatus, groundingMetadata, timing: { ...(msg.timing || {}), ...timingResults } } : msg
-            );
-            return { ...chat, messages: updatedMessages };
-          }
-          return chat;
-        }));
-      }
-    } catch (error) {
-      if ((error as Error).name !== 'AbortError') {
-        console.error("Gemini stream error:", error);
-        setChats(prev => prev.map(chat =>
-          chat.id === tempActiveChatId ? {
-            ...chat,
-            messages: chat.messages.map(msg =>
-              msg.id === aiMessageId ? { ...msg, status: AIStatus.Error, text: 'An error occurred. Please try again.' } : msg
-            )
-          } : chat
-        ));
-      }
-    } finally {
-        setCurrentAIStatus(AIStatus.Idle);
-        abortControllerRef.current = null;
-        
-        setChats(prev => prev.map(chat => {
-            if (chat.id === tempActiveChatId) {
-                const finalMessages = chat.messages.map(msg =>
-                    msg.id === aiMessageId ? { ...msg, status: AIStatus.Idle } : msg
-                );
-                
-                const aiFinalMessage = finalMessages.find(msg => msg.id === aiMessageId);
-                let finalSandboxState = chat.sandboxState;
-
-                if (aiFinalMessage) {
-                  const codeMatch = aiFinalMessage.text.match(/```(jsx|html|python|python-api|javascript)\n([\s\S]*?)```/);
-                  if (codeMatch) {
-                    finalSandboxState = { ...(finalSandboxState || { consoleOutput: [] }), language: codeMatch[1], code: codeMatch[2] };
-                  }
-                  
-                  const fileCreationRegex = /\{"file":\s*\{"filename":\s*"([^"]+)",\s*"content":\s*"((?:[^"\\]|\\.)*)"\}\}/g;
-                  const createdFiles: {filename: string, content: string}[] = [];
-                  let fileMatch;
-                  let newText = aiFinalMessage.text;
-                  while ((fileMatch = fileCreationRegex.exec(aiFinalMessage.text)) !== null) {
-                    newText = newText.replace(fileMatch[0], '').trim();
-                    try {
-                        createdFiles.push({
-                          filename: fileMatch[1],
-                          content: JSON.parse(`"${fileMatch[2]}"`)
-                        });
-                    } catch (e) { console.error("Failed to parse file content", e)}
-                  }
-                  
-                  if (createdFiles.length > 0) {
-                    finalMessages[finalMessages.length - 1] = {
-                        ...aiFinalMessage,
-                        files: createdFiles,
-                        text: newText,
-                        status: AIStatus.Idle
-                    };
-                  }
-                }
-                return { ...chat, messages: finalMessages, sandboxState: finalSandboxState };
-            }
-            return chat;
-        }));
-    }
-  }, [activeChatId, chats, handleStop]);
+  }, [activeChatId, activeChat, handleStop]);
   
   const handleSendMessage = useCallback(async (text: string, files: File[], isSearchActive: boolean) => {
     const filePromises = files.map(file => {
@@ -366,27 +296,31 @@ Please analyze all errors and the code, explain the causes, and provide a single
   }
 
   const handleSelectChat = (id: string) => {
-    if (currentAIStatus !== AIStatus.Idle) handleStop();
+    if (isStreaming) handleStop();
     setActiveChatId(id);
   }
   
-  const handleRenameChat = (id:string, newTitle: string) => {
-    setChats(prev => prev.map(chat => chat.id === id ? { ...chat, title: newTitle } : chat));
+  const handleRenameChat = async (id:string, newTitle: string) => {
+    const chatToRename = chats.find(c => c.id === id);
+    if (chatToRename) {
+        const updatedChat = { ...chatToRename, title: newTitle };
+        await putChat(updatedChat);
+        setChats(prev => prev.map(chat => chat.id === id ? updatedChat : chat));
+    }
     setRenamingChatId(null);
   };
   
-  const handleDeleteChat = (id: string) => {
+  const handleDeleteChat = async (id: string) => {
     const chatToDelete = chats.find(c => c.id === id);
     if (!chatToDelete) return;
     
     if (window.confirm(`Are you sure you want to delete "${chatToDelete.title}"?`)) {
-        setChats(prev => {
-            const newChats = prev.filter(chat => chat.id !== id);
-            if (activeChatId === id) {
-                setActiveChatId(newChats.length > 0 ? newChats[0].id : null);
-            }
-            return newChats;
-        });
+        await deleteChat(id);
+        const newChats = chats.filter(chat => chat.id !== id);
+        setChats(newChats);
+        if (activeChatId === id) {
+            setActiveChatId(newChats.length > 0 ? newChats[0].id : null);
+        }
     }
   };
   
@@ -411,38 +345,38 @@ Please analyze all errors and the code, explain the causes, and provide a single
     setSandboxState({ code, language, consoleOutput: [] });
   }, [setSandboxState]);
 
-  const handleCodeUpdate = useCallback((newCode: string) => {
-    setChats(prevChats => prevChats.map(chat => {
-        if (chat.id === activeChatId && chat.sandboxState) {
-            return {
-                ...chat,
-                sandboxState: { ...chat.sandboxState, code: newCode }
-            };
-        }
-        return chat;
-    }));
-  }, [activeChatId]);
-
-  const handleConsoleUpdate = useCallback((line: { type: string, message: string }) => {
-    if (activeChatId) {
-        setChats(prev => prev.map(chat => {
-            if (chat.id === activeChatId && chat.sandboxState) {
-                const newOutput = [...(chat.sandboxState.consoleOutput || []), line];
-                return { ...chat, sandboxState: { ...chat.sandboxState, consoleOutput: newOutput }};
-            }
-            return chat;
-        }));
+  const handleCodeUpdate = useCallback(async (newCode: string) => {
+    const chat = await getChat(activeChatId!);
+    if (chat && chat.sandboxState) {
+        const updatedChat = {
+            ...chat,
+            sandboxState: { ...chat.sandboxState, code: newCode }
+        };
+        await putChat(updatedChat);
+        setChats(prev => prev.map(c => c.id === activeChatId ? updatedChat : c));
     }
   }, [activeChatId]);
 
-  const handleClearConsole = useCallback(() => {
+  const handleConsoleUpdate = useCallback(async (line: { type: string, message: string }) => {
     if (activeChatId) {
-        setChats(prev => prev.map(chat => {
-            if (chat.id === activeChatId && chat.sandboxState) {
-                return { ...chat, sandboxState: { ...chat.sandboxState, consoleOutput: [] }};
-            }
-            return chat;
-        }));
+        const chat = await getChat(activeChatId);
+        if (chat && chat.sandboxState) {
+            const newOutput = [...(chat.sandboxState.consoleOutput || []), line];
+            const updatedChat = { ...chat, sandboxState: { ...chat.sandboxState, consoleOutput: newOutput }};
+            await putChat(updatedChat);
+            setChats(prev => prev.map(c => c.id === activeChatId ? updatedChat : c));
+        }
+    }
+  }, [activeChatId]);
+
+  const handleClearConsole = useCallback(async () => {
+    if (activeChatId) {
+        const chat = await getChat(activeChatId);
+        if (chat && chat.sandboxState) {
+            const updatedChat = { ...chat, sandboxState: { ...chat.sandboxState, consoleOutput: [] }};
+            await putChat(updatedChat);
+            setChats(prev => prev.map(c => c.id === activeChatId ? updatedChat : c));
+        }
     }
   }, [activeChatId]);
 
@@ -558,7 +492,7 @@ Please analyze all errors and the code, explain the causes, and provide a single
                 <ChatInput 
                   onSendMessage={handleSendMessage} 
                   onStop={handleStop}
-                  isStreaming={currentAIStatus !== AIStatus.Idle && currentAIStatus !== AIStatus.Error}
+                  isStreaming={isStreaming}
                 />
               </div>
             </div>
