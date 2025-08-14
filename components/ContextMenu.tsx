@@ -29,7 +29,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }
   }, [onClose]);
 
   const handleItemClick = (item: MenuItem) => {
-    if (!('action' in item)) return;
+    if (item.isSeparator) return;
     
     if(item.disabled) return;
 
@@ -62,7 +62,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }
     >
       <ul className="space-y-1">
         {items.map((item, index) => {
-          if (!('action' in item)) {
+          if (item.isSeparator) {
             return <li key={`sep-${index}`}><div className="h-px bg-border my-1" /></li>;
           }
           
