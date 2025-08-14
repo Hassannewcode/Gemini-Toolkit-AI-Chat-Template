@@ -6,6 +6,7 @@ export enum Sender {
 export enum AIStatus {
   Idle = 'idle',
   Thinking = 'thinking',
+  Planning = 'planning',
   Searching = 'searching',
   Generating = 'generating',
   Error = 'error',
@@ -17,6 +18,9 @@ export interface Message {
   text: string;
   timestamp: number;
   status?: AIStatus;
+  plan?: any;
+  attachments?: { name: string; type: string; data: string; }[];
+  files?: { filename: string; content: string; }[];
 }
 
 export interface Chat {

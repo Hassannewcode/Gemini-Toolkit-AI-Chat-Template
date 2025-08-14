@@ -1,27 +1,42 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { SendIcon, StopIcon } from './icons';
+import { SendIcon, StopIcon, PaperclipIcon, XMarkIcon } from './icons';
 
 interface ChatInputProps {
-  onSendMessage: (text: string) => void;
+  onSendMessage: (text: string, files: File[]) => void;
   onStop: () => void;
   isStreaming: boolean;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isStreaming }) => {
   const [text, setText] = useState('');
+  const [files, setFiles] = useState<File[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleSend = useCallback(() => {
-    if (isStreaming || !text.trim()) return;
-    onSendMessage(text);
+    if (isStreaming || (!text.trim() && files.length === 0)) return;
+    onSendMessage(text, files);
     setText('');
-  }, [isStreaming, text, onSendMessage]);
+    setFiles([]);
+  }, [isStreaming, text, files, onSendMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
+  };
+  
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files) {
+      setFiles(prev => [...prev, ...Array.from(event.target.files!)].slice(0, 5)); // Limit to 5 files
+    }
+    // Reset file input to allow selecting the same file again
+    event.target.value = '';
+  };
+
+  const handleRemoveFile = (index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   useEffect(() => {
@@ -49,7 +64,44 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isS
 
   return (
     <div className="bg-surface rounded-xl border border-border focus-within:ring-2 focus-within:ring-accent/50 animate-fade-in">
+      {files.length > 0 && (
+        <div className="p-2 border-b border-border">
+          <div className="flex flex-wrap gap-2">
+            {files.map((file, index) => (
+              <div key={index} className="relative bg-background p-1.5 rounded-lg flex items-center gap-2 text-xs">
+                {file.type.startsWith('image/') ? (
+                   <img src={URL.createObjectURL(file)} alt={file.name} className="w-8 h-8 rounded-md object-cover" />
+                ) : (
+                   <div className="w-8 h-8 rounded-md bg-accent-hover flex items-center justify-center">
+                     <PaperclipIcon className="w-4 h-4 text-text-secondary"/>
+                   </div>
+                )}
+                <span className="text-text-secondary truncate max-w-[120px]">{file.name}</span>
+                <button onClick={() => handleRemoveFile(index)} className="absolute -top-1 -right-1 bg-border text-text-secondary rounded-full p-0.5 hover:bg-red-500/50 hover:text-text-primary">
+                    <XMarkIcon className="w-3 h-3"/>
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="flex items-end w-full p-2">
+        <input 
+          type="file" 
+          ref={fileInputRef} 
+          onChange={handleFileChange}
+          className="hidden" 
+          multiple 
+          accept="image/*,text/*,.pdf,.csv,.json,.md"
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={isStreaming || files.length >= 5}
+          className="p-2 rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed enabled:hover:bg-accent-hover"
+          aria-label="Attach file"
+        >
+          <PaperclipIcon className="w-6 h-6" />
+        </button>
         <textarea
           ref={textareaRef}
           value={text}
@@ -63,7 +115,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isS
         />
         <button
           onClick={handleSend}
-          disabled={isStreaming || !text.trim()}
+          disabled={isStreaming || (!text.trim() && files.length === 0)}
           className="p-2 rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed enabled:hover:bg-accent-hover"
           aria-label="Send message"
         >

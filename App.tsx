@@ -7,6 +7,7 @@ import { Header } from './components/Header';
 import { AIStatus, Message, Sender, Chat } from './types';
 import { PreviewPanel } from './components/PreviewPanel';
 import { generateResponseStream } from './services/geminiService';
+import type { Part } from '@google/genai';
 
 const App: React.FC = () => {
   const [chats, setChats] = useState<Chat[]>([]);
@@ -80,19 +81,35 @@ const App: React.FC = () => {
     }
   }, [activeChatId]);
 
-  const handleSendMessage = useCallback(async (text: string) => {
-    if (!text.trim()) return;
+  const handleSendMessage = useCallback(async (text: string, files: File[]) => {
+    if (!text.trim() && files.length === 0) return;
     
     handleStop();
     
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    
+    const filePromises = files.map(file => {
+      return new Promise<{ name: string; type: string; dataUrl: string; base64Data: string }>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const dataUrl = e.target?.result as string;
+          const base64Data = dataUrl.split(',')[1];
+          resolve({ name: file.name, type: file.type, dataUrl, base64Data });
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    });
+
+    const processedFiles = await Promise.all(filePromises);
 
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       sender: Sender.User,
       text,
       timestamp: Date.now(),
+      attachments: processedFiles.map(f => ({ name: f.name, type: f.type, data: f.dataUrl })),
     };
     
     const aiMessageId = `ai-${Date.now()}`;
@@ -112,7 +129,7 @@ const App: React.FC = () => {
         tempActiveChatId = `chat-${Date.now()}`;
         const newChat: Chat = {
             id: tempActiveChatId,
-            title: text.length > 30 ? text.substring(0, 27) + '...' : text,
+            title: text.length > 30 ? text.substring(0, 27) + '...' : text || 'New Chat',
             messages: [userMessage, initialAIMessage],
             sandboxState: null,
         };
@@ -129,7 +146,6 @@ const App: React.FC = () => {
     
     setCurrentAIStatus(AIStatus.Thinking);
     
-    // Use a function to get the latest chat history to avoid stale state
     const getHistory = (chatId: string) => {
       const chat = chats.find(c => c.id === chatId);
       return (chat?.messages.slice(0, -2) ?? []).map(msg => ({
@@ -139,21 +155,53 @@ const App: React.FC = () => {
     };
     
     const history = isNewChat ? [] : getHistory(tempActiveChatId);
+    const geminiAttachments: Part[] = processedFiles.map(f => ({
+      inlineData: { mimeType: f.type, data: f.base64Data }
+    }));
 
     try {
-      const stream = generateResponseStream(text, history, controller.signal);
-      let firstChunk = true;
+      const stream = generateResponseStream(text, history, geminiAttachments, controller.signal);
+      
+      let planData: any = null;
+      let buffer = '';
+      let isPlanFound = false;
 
       for await (const chunkText of stream) {
         if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-        if (firstChunk) {
-            setCurrentAIStatus(AIStatus.Generating);
-            firstChunk = false;
+        
+        buffer += chunkText;
+        let currentStatus = currentAIStatus;
+        let textToSet = buffer;
+
+        if (!isPlanFound) {
+          const planEndIndex = buffer.indexOf('</plan>');
+          if (planEndIndex !== -1) {
+            const planStartIndex = buffer.indexOf('<plan>');
+            if (planStartIndex !== -1) {
+              try {
+                const planString = buffer.substring(planStartIndex + 6, planEndIndex);
+                planData = JSON.parse(planString);
+                isPlanFound = true;
+                currentStatus = AIStatus.Generating;
+                // The rest of the buffer is part of the actual message
+                textToSet = buffer.substring(planEndIndex + 7);
+                setCurrentAIStatus(AIStatus.Generating);
+              } catch (e) {
+                console.error("Failed to parse plan", e);
+                isPlanFound = true; // Stop trying to parse
+                setCurrentAIStatus(AIStatus.Generating);
+              }
+            } else if (buffer.length > 100) { // Failsafe
+                isPlanFound = true;
+                setCurrentAIStatus(AIStatus.Generating);
+            }
+          }
         }
+        
         setChats(prev => prev.map(chat => {
           if (chat.id === tempActiveChatId) {
             const updatedMessages = chat.messages.map(msg => 
-              msg.id === aiMessageId ? { ...msg, text: msg.text + chunkText } : msg
+              msg.id === aiMessageId ? { ...msg, text: textToSet, plan: planData, status: currentStatus } : msg
             );
             return { ...chat, messages: updatedMessages };
           }
@@ -178,20 +226,41 @@ const App: React.FC = () => {
         setChats(prev => {
             return prev.map(chat => {
                 if (chat.id === tempActiveChatId) {
-                    const finalMessages = chat.messages.map(msg =>
+                    let finalMessages = chat.messages.map(msg =>
                         msg.id === aiMessageId ? { ...msg, status: AIStatus.Idle } : msg
                     );
                     
                     const aiFinalMessage = finalMessages.find(msg => msg.id === aiMessageId);
                     if (aiFinalMessage) {
+                      // Handle code blocks for sandbox
                       const codeMatch = aiFinalMessage.text.match(/```(jsx|html|python|python-api)\n([\s\S]*?)```/);
-                      if (codeMatch) {
-                        const language = codeMatch[1];
-                        const code = codeMatch[2];
-                        const newSandboxState = { code, language };
-                        setTimeout(() => setAndPersistSandboxState(newSandboxState), 0);
-                        return { ...chat, messages: finalMessages, sandboxState: newSandboxState };
+                      const sandboxState = codeMatch ? { language: codeMatch[1], code: codeMatch[2] } : chat.sandboxState;
+                      
+                      // Handle file creation
+                      const fileCreationRegex = /\{"file":\s*\{"filename":\s*"([^"]+)",\s*"content":\s*"((?:[^"\\]|\\.)*)"\}\}/g;
+                      const createdFiles: {filename: string, content: string}[] = [];
+                      let fileMatch;
+                      let newText = aiFinalMessage.text;
+                      while ((fileMatch = fileCreationRegex.exec(aiFinalMessage.text)) !== null) {
+                        newText = newText.replace(fileMatch[0], '').trim();
+                        try {
+                           createdFiles.push({
+                              filename: fileMatch[1],
+                              content: JSON.parse(`"${fileMatch[2]}"`)
+                           });
+                        } catch (e) { console.error("Failed to parse file content", e)}
                       }
+                      
+                      if (createdFiles.length > 0) {
+                        finalMessages = finalMessages.map(msg =>
+                          msg.id === aiMessageId ? { ...msg, files: createdFiles, text: newText } : msg
+                        );
+                      }
+                      
+                      if (sandboxState !== chat.sandboxState) {
+                         setTimeout(() => setAndPersistSandboxState(sandboxState), 0);
+                      }
+                      return { ...chat, messages: finalMessages, sandboxState };
                     }
                     return { ...chat, messages: finalMessages };
                 }
@@ -261,6 +330,12 @@ const App: React.FC = () => {
     setAndPersistSandboxState({ code, language });
   }, [setAndPersistSandboxState]);
 
+  const handleCodeUpdate = useCallback((newCode: string) => {
+    if (sandboxState) {
+      setAndPersistSandboxState({ ...sandboxState, code: newCode });
+    }
+  }, [sandboxState, setAndPersistSandboxState]);
+
   const activeChat = chats.find(chat => chat.id === activeChatId);
   const messages = activeChat ? activeChat.messages : [];
 
@@ -287,7 +362,7 @@ const App: React.FC = () => {
             <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 md:p-6">
                <div className="max-w-3xl mx-auto space-y-8">
                 {messages.length === 0 ? (
-                  <WelcomeScreen onPromptClick={(prompt) => handleSendMessage(prompt)} />
+                  <WelcomeScreen onPromptClick={(prompt) => handleSendMessage(prompt, [])} />
                 ) : (
                   messages.map(msg => <ChatMessage key={msg.id} message={msg} onPreviewCode={handlePreviewCode} />)
                 )}
@@ -310,6 +385,7 @@ const App: React.FC = () => {
             code={sandboxState.code}
             language={sandboxState.language}
             onClose={() => setAndPersistSandboxState(null)}
+            onCodeUpdate={handleCodeUpdate}
           />
         )}
       </div>

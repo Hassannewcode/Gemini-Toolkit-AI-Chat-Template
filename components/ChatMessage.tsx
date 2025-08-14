@@ -1,12 +1,141 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Message, Sender, AIStatus } from '../types';
-import { UserIcon, SparklesIcon, CopyIcon, CheckIcon, CodeBracketIcon, EyeIcon } from './icons';
+import { UserIcon, SparklesIcon, CopyIcon, CheckIcon, CodeBracketIcon, EyeIcon, BoltIcon, PlusIcon } from './icons';
+
+// --- Custom Hooks ---
+
+function useTypewriter(text: string, isStreaming: boolean) {
+    const [displayedText, setDisplayedText] = useState('');
+    const requestRef = useRef<number | null>(null);
+    const lastTimeRef = useRef<number | null>(null);
+
+    const animate = (time: number) => {
+        if (!isStreaming) {
+            setDisplayedText(text);
+            return;
+        }
+        if (lastTimeRef.current != null) {
+            const deltaTime = time - lastTimeRef.current;
+            // Update text ~33 times per second
+            if (deltaTime > 30) { 
+                setDisplayedText(prev => text.slice(0, prev.length + 1));
+                lastTimeRef.current = time;
+            }
+        } else {
+            lastTimeRef.current = time;
+        }
+
+        requestRef.current = requestAnimationFrame(animate);
+    };
+
+    useEffect(() => {
+        if (!isStreaming) {
+            setDisplayedText(text);
+            if (requestRef.current !== null) cancelAnimationFrame(requestRef.current);
+            return;
+        }
+        
+        if (displayedText.length < text.length) {
+            lastTimeRef.current = performance.now();
+            requestRef.current = requestAnimationFrame(animate);
+        } else {
+             if (requestRef.current !== null) cancelAnimationFrame(requestRef.current);
+        }
+
+        return () => {
+            if (requestRef.current !== null) {
+                cancelAnimationFrame(requestRef.current);
+            }
+        };
+    }, [text, isStreaming, displayedText.length]);
+    
+    useEffect(() => {
+        if (!text) setDisplayedText('');
+    }, [text]);
+
+    return displayedText;
+}
 
 // --- Sub-components ---
 
 const BlinkingCursor: React.FC = () => (
     <span className="inline-block w-2 h-4 bg-accent animate-blink" />
 );
+
+const AttachmentsPreview: React.FC<{ attachments: Message['attachments'] }> = ({ attachments }) => {
+    if (!attachments || attachments.length === 0) return null;
+    return (
+        <div className="flex flex-wrap gap-2 mb-2">
+            {attachments.map((file, index) => (
+                <div key={index} className="bg-surface p-1.5 rounded-lg flex items-center gap-2 text-xs border border-border">
+                    <img src={file.data} alt={file.name} className="w-10 h-10 rounded-md object-cover" />
+                    <span className="text-text-secondary truncate max-w-[150px]">{file.name}</span>
+                </div>
+            ))}
+        </div>
+    );
+};
+
+const FileDownloads: React.FC<{ files: Message['files'] }> = ({ files }) => {
+    if (!files || files.length === 0) return null;
+    
+    const handleDownload = (filename: string, content: string) => {
+        const blob = new Blob([content], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    return (
+        <div className="space-y-2 my-4">
+            {files.map((file, index) => (
+                <button
+                    key={index}
+                    onClick={() => handleDownload(file.filename, file.content)}
+                    className="w-full text-left bg-surface border border-border p-3 rounded-lg flex items-center gap-3 hover:bg-accent-hover transition-colors"
+                >
+                    <CodeBracketIcon className="w-5 h-5 text-text-secondary flex-shrink-0" />
+                    <div className="flex-1">
+                        <p className="text-sm font-medium text-text-primary">{file.filename}</p>
+                        <p className="text-xs text-text-tertiary">Click to download</p>
+                    </div>
+                </button>
+            ))}
+        </div>
+    );
+};
+
+const PlanDisplay: React.FC<{ plan: any, status: AIStatus }> = ({ plan, status }) => {
+    if (!plan && status !== AIStatus.Thinking) return null;
+    
+    if (status === AIStatus.Thinking || !plan) {
+         return (
+             <div className="flex items-center gap-3 text-sm text-text-secondary animate-pulse my-2">
+                 <BoltIcon className="w-4 h-4" />
+                 <span>Thinking...</span>
+             </div>
+         );
+    }
+
+    return (
+        <details className="text-sm my-2 group">
+            <summary className="cursor-pointer text-text-secondary hover:text-text-primary transition-colors flex items-center gap-2">
+                <BoltIcon className="w-4 h-4" />
+                Show reasoning
+                <PlusIcon className="w-4 h-4 group-open:rotate-45 transition-transform" />
+            </summary>
+            <pre className="mt-2 p-3 bg-black/50 border border-border rounded-lg text-xs text-text-secondary overflow-x-auto">
+                <code>{JSON.stringify(plan, null, 2)}</code>
+            </pre>
+        </details>
+    );
+};
+
 
 interface CodeBlockProps {
     code: string;
@@ -86,20 +215,6 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, isComplete, onPre
     );
 };
 
-const ChatMessageSkeleton: React.FC = () => (
-    <div className={`flex items-start gap-4 animate-slide-in`}>
-        <div className="flex-shrink-0 mt-1">
-             <div className="w-7 h-7 rounded-full flex items-center justify-center bg-surface text-accent border border-border">
-                <SparklesIcon className="w-4 h-4" />
-            </div>
-        </div>
-        <div className="flex-1 pt-0.5 animate-pulse-fast space-y-2">
-            <div className="h-4 bg-surface rounded-md w-3/4"></div>
-            <div className="h-4 bg-surface rounded-md w-1/2"></div>
-        </div>
-    </div>
-);
-
 const MarkdownText: React.FC<{ text: string }> = ({ text }) => {
   const elements: React.ReactNode[] = [];
   const lines = text.split('\n');
@@ -154,7 +269,7 @@ const MarkdownText: React.FC<{ text: string }> = ({ text }) => {
       elements.push(<blockquote key={lineIndex} className="border-l-4 border-border pl-4 my-2 text-text-secondary italic">{applyInlineFormatting(line.substring(2))}</blockquote>);
     } else if (line.trim() !== '') {
       elements.push(<p key={lineIndex}>{applyInlineFormatting(line)}</p>);
-    } else {
+    } else if (elements.length > 0 && !(elements[elements.length - 1] as any).props?.className?.includes('h-4')) {
       elements.push(<div key={lineIndex} className="h-4" />);
     }
   });
@@ -163,31 +278,6 @@ const MarkdownText: React.FC<{ text: string }> = ({ text }) => {
 
   return <>{elements}</>;
 };
-
-
-// --- Custom Hooks ---
-
-function useTypewriter(text: string, isStreaming: boolean) {
-    const [displayedText, setDisplayedText] = useState('');
-
-    useEffect(() => {
-        if (!isStreaming) {
-            setDisplayedText(text);
-            return;
-        }
-
-        let timeoutId: NodeJS.Timeout;
-        if (displayedText.length < text.length) {
-            timeoutId = setTimeout(() => {
-                setDisplayedText(text.slice(0, displayedText.length + 1));
-            }, 10);
-        }
-
-        return () => clearTimeout(timeoutId);
-    }, [text, displayedText, isStreaming]);
-
-    return displayedText;
-}
 
 // --- Main Component ---
 
@@ -204,6 +294,7 @@ export const ChatMessage: React.FC<{ message: Message, onPreviewCode: (code: str
           if (codeMatch) {
               const language = codeMatch[1] || 'text';
               const code = codeMatch[2] || '';
+              // A code block is "complete" if the original, non-typewritten text includes this part entirely.
               const isPartComplete = message.text.includes(part);
               return <CodeBlock key={index} language={language} code={code} isComplete={isPartComplete} onPreview={onPreviewCode} />;
           }
@@ -225,22 +316,27 @@ export const ChatMessage: React.FC<{ message: Message, onPreviewCode: (code: str
       </div>
   );
   
-  const showSkeleton = message.text.length === 0 && message.status && [AIStatus.Thinking].includes(message.status);
-
-  if (showSkeleton) {
-      return <ChatMessageSkeleton />;
-  }
+  const showPlan = !isUser && (message.plan || message.status === AIStatus.Thinking);
 
   return (
     <div className={`flex items-start gap-4 animate-slide-in`}>
       <div className="flex-shrink-0 mt-1">
         {icon}
       </div>
-      <div className="flex-1 pt-0.5">
-        <div className="text-text-primary/90 space-y-4 leading-relaxed">
-            {content}
-            {isStreaming && <BlinkingCursor />}
-        </div>
+      <div className="flex-1 pt-0.5 min-w-0">
+        <AttachmentsPreview attachments={message.attachments} />
+        {isUser && <p className="text-text-primary/90 leading-relaxed whitespace-pre-wrap">{message.text}</p>}
+        
+        {showPlan && <PlanDisplay plan={message.plan} status={message.status!} />}
+        
+        {!isUser && (
+            <div className="text-text-primary/90 space-y-4 leading-relaxed">
+                {content}
+                <FileDownloads files={message.files} />
+                {isStreaming && message.text.length > 0 && <BlinkingCursor />}
+            </div>
+        )}
+        
         {message.status === AIStatus.Error && (
             <p className="text-red-400 text-sm mt-2">An error occurred. Please try again.</p>
         )}

@@ -1,83 +1,54 @@
-import { GoogleGenAI, Content } from "@google/genai";
+import { GoogleGenAI, Content, Part, Type } from "@google/genai";
 
 const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
 
 const systemInstruction = {
     role: "model",
     parts: [{
-        text: `You are Gemini, a helpful and multifaceted AI assistant. Your goal is to provide accurate, detailed, and comprehensive responses.
-You have a special capability: when asked to create something with a user interface or backend logic, you can generate code that runs in a sandboxed environment.
+        text: `You are Gemini, an expert AI assistant. Your primary goal is to provide comprehensive, accurate, and interactive responses.
 
-**General Guidelines:**
-- Format your answers using markdown (e.g., \`**bold**\`, \`*italic*\`, \`### Headings\`, lists). This makes your responses easier to read.
-- Be thorough in your explanations.
+**Response Process:**
+Your response process is now in two phases, delivered in a single stream.
 
-**For Code Generation:**
-When asked to write code, you must make it runnable in the special sandboxed environment.
+**Phase 1: Planning**
+Before generating your main response, you MUST first output a plan. This plan gives the user insight into your process. The plan must be a JSON object enclosed in special tags: \`<plan>...\</plan>\`.
+**DO NOT use markdown code fences for the plan.**
+Example: \`<plan>{"thought": "The user wants a React counter. I will create a simple component with state for the count and two buttons.", "toolsToUse": ["code_generator"], "outputFormat": "jsx_component"}\</plan>\`
+The plan JSON should contain:
+- "thought": Your step-by-step reasoning.
+- "toolsToUse": An array of tools you'll use (e.g., "code_generator", "file_creator", "web_search").
+- "outputFormat": The format of your final output (e.g., "markdown_text", "jsx_component").
 
-**Sandbox Capabilities & Rules:**
+**Phase 2: Main Response**
+Immediately after the closing \`</plan>\` tag, provide your full response in Markdown.
 
-1.  **Code Blocks:** All code must be enclosed in markdown code blocks with the correct language identifier (e.g., \`\`\`jsx, \`\`\`html, \`\`\`python, \`\`\`python-api).
-2.  **UI Development:** For any request involving a User Interface, you **must** use \`jsx\` or \`html\`. The sandbox **cannot** render Python-based GUI frameworks (like Flet, Tkinter, etc.).
-3.  **Backend Development:** All backend or server requests must be implemented as a \`python-api\` simulation. The sandbox does not run real servers (e.g., Node.js, Flask, Django).
+**Tool: File Creator**
+If a user's request is best fulfilled by creating a file (e.g., a dataset, a poem, a full HTML page), you must embed a special JSON object within your final markdown response. This object should not be in a code block.
+Format:
+\`{"file": {"filename": "example.csv", "content": "col1,col2\\nval1,val2"}}\`
+The "content" must be a JSON-escaped string. Your surrounding text should indicate that you've created a file.
 
-**Language-Specific Formats:**
+**Tool: Code Generator & Sandbox Rules**
+When asked to write code, you must make it runnable in the sandboxed environment.
+1.  **Code Blocks:** All code must be in markdown code blocks with the correct language identifier (\`jsx\`, \`html\`, \`python\`, \`python-api\`).
+2.  **UI Development:** For UIs, use \`jsx\` to create interactive widgets or \`html\` for static pages.
+3.  **Backend Development:** Use \`python-api\` for backend logic simulations.
+4.  **Environment Limitations:**
+    - **No Build Tools/npm:** Code must run without build steps.
+    - **JS Libs:** Only React and ReactDOM are available for \`jsx\`.
+    - **Python Libs:** \`numpy\` and \`pandas\` are available.
+5.  **Language Formats:**
+    *   **\`jsx\` (React):** Provide ONLY the component code. Do not include \`import React\` or \`export default\`. Use \`React.useState\`, etc.
+    *   **\`html\`:** Provide a complete, self-contained HTML file with inline CSS (\`<style>\`) and JS (\`<script>\`).
+    *   **\`python\`/\`python-api\`:** Follow standard formats. 
+    *   **\`python-api\`:** For backend logic, APIs, or data processing. Define standard Python functions with type hints. When you provide \`python-api\` code, the system automatically creates an interactive "API Runner" panel for the user to test the functions. You can mention this in your response, for example: "I've created an API to process the data; you can test it in the interactive panel that appeared."
 
-*   **\`jsx\` (React):**
-    *   Provide **only** the component code.
-    *   **Do not** include \`import React from 'react'\`. \`React\` is a global.
-    *   **Do not** include \`export default ...\`. The sandbox finds the component.
-    *   Use \`React.useState\`, \`React.useEffect\`, etc.
-
-*   **\`html\`:**
-    *   Provide a **complete, self-contained HTML file**.
-    *   Include all CSS and JavaScript within the HTML file using \`<style>\` and \`<script>\` tags.
-
-*   **\`python\`:**
-    *   For standard scripting, data processing, or calculations.
-    *   Use the \`print()\` function for any output.
-    *   The packages \`numpy\` and \`pandas\` are pre-installed.
-
-*   **\`python-api\` (Backend Simulation):**
-    *   Define one or more Python functions, which will be treated as API endpoints.
-    *   Use Python type hints for function arguments (e.g., \`name: str\`) to generate a testing UI.
-    *   Each function must \`return\` a JSON-serializable dictionary or a string.
-    *   Use \`print()\` for any logs, which will appear in the console.
-    *   **Do not** include server-starting code (like \`app.run()\`).
-
-**Example (Python API):**
-\`\`\`python-api
-import json
-import random
-
-# A mock database of posts
-posts = {
-    1: {"title": "First Post", "content": "This is the first post."},
-}
-next_post_id = 2
-
-def get_post(post_id: int):
-    """Fetches a post by its ID."""
-    print(f"API CALLED: get_post with id: {post_id}")
-    return posts.get(post_id, {"error": "Post not found"})
-
-def create_post(title: str, content: str):
-    """Creates a new post and returns it."""
-    global next_post_id
-    print(f"API CALLED: create_post with title: '{title}'")
-    new_post = {"title": title, "content": content}
-    posts[next_post_id] = new_post
-    response = {"status": "success", "post_id": next_post_id, "data": new_post}
-    next_post_id += 1
-    return response
-\`\`\`
-
-Adhering to these formats is crucial for the code to be rendered/executed correctly in the live sandbox.`
+By following this two-phase process and utilizing your tools correctly, you will provide a superior user experience.`
     }]
 };
 
 
-export async function* generateResponseStream(prompt: string, history: Content[], signal: AbortSignal): AsyncGenerator<string, void, undefined> {
+export async function* generateResponseStream(prompt: string, history: Content[], attachments: Part[], signal: AbortSignal): AsyncGenerator<string, void, undefined> {
     const model = 'gemini-2.5-flash';
     
     const chat = ai.chats.create({
@@ -85,13 +56,69 @@ export async function* generateResponseStream(prompt: string, history: Content[]
         history: [systemInstruction, ...history],
     });
 
-    const result = await chat.sendMessageStream({ message: prompt });
+    const userParts: Part[] = [{ text: prompt }, ...attachments];
+
+    const result = await chat.sendMessageStream({ message: userParts });
     
     for await (const chunk of result) {
         if (signal.aborted) {
-            // Stop processing if the user aborts
             return;
         }
         yield chunk.text;
     }
+}
+
+export async function analyzeAndFixCode(code: string, language: string, errorMessage: string): Promise<{ explanation: string, fixedCode: string }> {
+    const model = 'gemini-2.5-flash';
+
+    const prompt = `You are an expert software engineer and diagnostician, specializing in debugging code within a sandboxed browser environment.
+
+A piece of code written in ${language} has failed with the following error message:
+Error Message:
+\`\`\`
+${errorMessage}
+\`\`\`
+
+The problematic code is:
+\`\`\`${language}
+${code}
+\`\`\`
+
+Your task is to analyze the root cause of this error, devise a solution, and provide the corrected code. You must respond in a JSON format.
+
+**Analysis Steps:**
+1.  **Analyze the Error:** Understand what the error message means in the context of the provided code and the sandboxed environment.
+2.  **Identify the Root Cause:** Pinpoint the exact lines or logic that are causing the error.
+3.  **Consider Sandbox Constraints:** The code runs in a special environment.
+    - For **JSX**: \`React\` and \`ReactDOM\` are global, but there are no build steps. The sandbox runner must identify a single root component to render. The runner finds the last declared component (class or function) with a PascalCase name (e.g., \`MyComponent\`). A common error is "Could not find a React component to render," which can happen if the component isn't declared correctly, is an anonymous function, or if multiple components are present without a clear main component.
+    - For **Python**: The environment has standard libraries plus \`numpy\` and \`pandas\`.
+4.  **Formulate a Fix:** Write the corrected code that resolves the error.
+5.  **Explain the Fix:** Briefly explain what was wrong and how you fixed it in a user-friendly way.
+
+**Output Format:**
+Return a single JSON object matching the specified schema.`;
+
+    const response = await ai.models.generateContent({
+        model: model,
+        contents: prompt,
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    explanation: {
+                        type: Type.STRING,
+                        description: "A concise explanation of the problem and the solution."
+                    },
+                    fixedCode: {
+                        type: Type.STRING,
+                        description: "The complete, corrected code. This should be a raw string, not wrapped in markdown."
+                    }
+                },
+                required: ["explanation", "fixedCode"]
+            }
+        }
+    });
+    
+    return JSON.parse(response.text);
 }

@@ -2,7 +2,7 @@ import React from 'react';
 import { SparklesIcon } from './icons';
 
 interface WelcomeScreenProps {
-  onPromptClick: (prompt: string) => void;
+  onPromptClick: (prompt: string, files: File[]) => void;
 }
 
 const suggestionPrompts = [
@@ -36,7 +36,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onPromptClick }) =
                 {suggestionPrompts.map((prompt) => (
                     <button
                         key={prompt.heading}
-                        onClick={() => onPromptClick(`${prompt.heading} ${prompt.message}`)}
+                        onClick={() => onPromptClick(`${prompt.heading} ${prompt.message}`, [])}
                         className="bg-transparent border border-border rounded-lg p-4 text-left hover:bg-surface transition-all duration-200"
                     >
                         <p className="text-sm font-semibold text-text-primary">{prompt.heading}</p>
