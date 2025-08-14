@@ -199,10 +199,50 @@ const App: React.FC = () => {
     
     const getHistory = (chatId: string) => {
       const chat = chats.find(c => c.id === chatId);
-      return (chat?.messages.slice(0, -2) ?? []).map(msg => ({
-        role: msg.sender === Sender.User ? 'user' : 'model',
-        parts: [{ text: msg.text }] // Note: This simplified history does not include attachments from past messages.
-      }));
+      if (!chat) return [];
+    
+      return (chat.messages.slice(0, -2) ?? []).map(msg => {
+        const parts: Part[] = [];
+        let textForHistory = msg.text;
+    
+        // For AI messages that created files, add the file creation JSON back to the text.
+        // This reminds the AI of the files it has created in previous turns.
+        if (msg.sender === Sender.AI && msg.files && msg.files.length > 0) {
+          const fileJsonStrings = msg.files.map(file => 
+            JSON.stringify({ file: { filename: file.filename, content: file.content } })
+          );
+          // Append the file JSON to the original text response for the history.
+          textForHistory = `${textForHistory}\n\n${fileJsonStrings.join('\n')}`.trim();
+        }
+    
+        // Always add the text part if it exists.
+        if (textForHistory) {
+          parts.push({ text: textForHistory });
+        }
+    
+        // Add any user-uploaded files (images, text files, etc.) to the history.
+        // This is critical for the AI to have context in follow-up questions.
+        if (msg.sender === Sender.User && msg.attachments) {
+          for (const attachment of msg.attachments) {
+            // The data is a data URL: "data:mime/type;base64,..."
+            // We need to extract the base64 part.
+            const [header, base64Data] = attachment.data.split(',');
+            if (base64Data) {
+              parts.push({
+                inlineData: {
+                  mimeType: attachment.type,
+                  data: base64Data
+                }
+              });
+            }
+          }
+        }
+        
+        return {
+          role: msg.sender === Sender.User ? 'user' : 'model',
+          parts,
+        };
+      }).filter(content => content.parts.length > 0); // Ensure we don't send empty message parts.
     };
     
     const history = isNewChat ? [] : getHistory(tempActiveChatId);
@@ -216,6 +256,8 @@ const App: React.FC = () => {
         files: processedFiles.map(f => ({ filename: f.name, type: f.type, size: f.size })),
     };
     const promptJson = JSON.stringify(promptPayload, null, 2);
+
+    const reasoningRegex = /<reasoning>([\s\S]*?)<\/reasoning>/;
 
     try {
       const stream = generateResponseStream(promptJson, history, geminiAttachments, controller.signal, isSearchActive);
@@ -235,10 +277,8 @@ const App: React.FC = () => {
         }
 
         let currentStatus = currentAIStatus;
-        let textToSet = buffer;
-
+        
         if (!isReasoningFound) {
-            const reasoningRegex = /<reasoning>([\s\S]*?)<\/reasoning>/;
             const reasoningMatch = buffer.match(reasoningRegex);
           
             if (reasoningMatch) {
@@ -255,19 +295,21 @@ const App: React.FC = () => {
                 reasoningData = { thought, critique, plan };
                 isReasoningFound = true;
                 currentStatus = AIStatus.Generating;
-                textToSet = buffer.replace(reasoningRegex, '').trimStart();
                 setCurrentAIStatus(AIStatus.Generating);
               } catch (e) {
                 console.error("Failed to parse reasoning block", e);
                 isReasoningFound = true; // Stop trying
                 setCurrentAIStatus(AIStatus.Generating);
-                textToSet = buffer.replace(reasoningRegex, '').trimStart(); // Still remove the block
               }
             } else if (buffer.length > 1000 && !buffer.includes('<reasoning>')) { // Failsafe
                 isReasoningFound = true;
                 setCurrentAIStatus(AIStatus.Generating);
             }
         }
+        
+        const textToSet = isReasoningFound
+          ? buffer.replace(reasoningRegex, '').trimStart()
+          : buffer;
         
         setChats(prev => prev.map(chat => {
           if (chat.id === tempActiveChatId) {
@@ -310,7 +352,7 @@ const App: React.FC = () => {
                     const aiFinalMessage = finalMessages.find(msg => msg.id === aiMessageId);
                     if (aiFinalMessage) {
                       // Handle code blocks for sandbox
-                      const codeMatch = aiFinalMessage.text.match(/```(jsx|html|python|python-api)\n([\s\S]*?)```/);
+                      const codeMatch = aiFinalMessage.text.match(/```(jsx|html|python|python-api|javascript)\n([\s\S]*?)```/);
                       const sandboxState = codeMatch ? { language: codeMatch[1], code: codeMatch[2] } : chat.sandboxState;
                       
                       // Handle file creation
