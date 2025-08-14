@@ -33,7 +33,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isS
     if (event.target.files) {
       setFiles(prev => [...prev, ...Array.from(event.target.files!)].slice(0, 20)); // Limit to 20 files
     }
-    // Reset file input to allow selecting the same file again
     event.target.value = '';
   };
 
@@ -58,28 +57,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isS
       el.style.height = `${Math.min(scrollHeight, 160)}px`; // Max height of 160px
     }
   }, [text]);
-  
-  if (isStreaming) {
-    return (
-        <div className="flex justify-center animate-fade-in">
-            <button
-                onClick={onStop}
-                className="flex items-center justify-center gap-2 bg-surface hover:bg-accent-hover transition-colors border border-border text-text-primary font-medium px-4 py-2 rounded-lg"
-            >
-                <StopIcon className="w-4 h-4"/>
-                Stop generating
-            </button>
-        </div>
-    );
-  }
 
   return (
-    <div onPaste={handlePaste} className="bg-surface rounded-xl border border-border focus-within:ring-2 focus-within:ring-accent/50 animate-fade-in">
+    <div onPaste={handlePaste} className={`bg-surface rounded-xl border border-border focus-within:ring-2 focus-within:ring-accent/50 transition-all duration-200 animate-fade-in ${isStreaming ? 'opacity-70' : ''}`}>
       {files.length > 0 && (
-        <div className="p-2 border-b border-border">
+        <div className="p-3 border-b border-border">
           <div className="flex flex-wrap gap-2">
             {files.map((file, index) => (
-              <div key={index} className="relative bg-background p-1.5 rounded-lg flex items-center gap-2 text-xs">
+              <div key={`${file.name}-${index}`} className="relative bg-background p-1.5 pl-2 rounded-lg flex items-center gap-2 text-xs animate-scale-in">
                 {file.type.startsWith('image/') ? (
                    <img src={URL.createObjectURL(file)} alt={file.name} className="w-8 h-8 rounded-md object-cover" />
                 ) : (
@@ -88,15 +73,63 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isS
                    </div>
                 )}
                 <span className="text-text-secondary truncate max-w-[120px]">{file.name}</span>
-                <button onClick={() => handleRemoveFile(index)} className="absolute -top-1 -right-1 bg-border text-text-secondary rounded-full p-0.5 hover:bg-red-500/50 hover:text-text-primary">
-                    <XMarkIcon className="w-3 h-3"/>
+                <button onClick={() => handleRemoveFile(index)} disabled={isStreaming} className="absolute -top-1.5 -right-1.5 bg-border text-text-secondary rounded-full p-0.5 hover:bg-red-500 hover:text-text-primary transition-all duration-200 disabled:opacity-50">
+                    <XMarkIcon className="w-3.5 h-3.5"/>
                 </button>
               </div>
             ))}
           </div>
         </div>
       )}
-      <div className="flex items-end w-full p-2">
+      <div className="flex items-end w-full p-1.5">
+        <button
+          onClick={() => setIsSearchActive(!isSearchActive)}
+          disabled={isStreaming}
+          className={`p-2.5 rounded-full transition-colors duration-200 ${isSearchActive ? 'bg-blue-500/20 text-blue-300' : 'text-text-secondary enabled:hover:bg-accent-hover enabled:hover:text-text-primary'} disabled:opacity-30 disabled:cursor-not-allowed`}
+          aria-pressed={isSearchActive}
+          title="Toggle Web Search"
+          aria-label="Toggle Web Search"
+        >
+          <SearchIcon className="w-5 h-5" />
+        </button>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={isStreaming || files.length >= 20}
+          className="p-2.5 rounded-full text-text-secondary transition-colors duration-200 disabled:opacity-30 disabled:cursor-not-allowed enabled:hover:bg-accent-hover enabled:hover:text-text-primary"
+          aria-label="Attach file"
+          title="Attach file"
+        >
+          <PaperclipIcon className="w-5 h-5" />
+        </button>
+        <textarea
+          ref={textareaRef}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={isStreaming ? "AI is generating..." : (isSearchActive ? "Search the web or send a message..." : "Send a message, or paste a file...")}
+          className="flex-1 bg-transparent resize-none p-2 mx-1 text-text-primary placeholder-text-secondary focus:outline-none disabled:cursor-not-allowed"
+          rows={1}
+          disabled={isStreaming}
+          aria-label="Chat input"
+        />
+        {isStreaming ? (
+          <button
+              onClick={onStop}
+              className="p-2.5 rounded-full text-text-secondary transition-all duration-200 bg-red-500/20 text-red-300 hover:bg-red-500/40"
+              aria-label="Stop generating"
+          >
+              <StopIcon className="w-5 h-5"/>
+          </button>
+        ) : (
+          <button
+            onClick={handleSend}
+            disabled={(!text.trim() && files.length === 0)}
+            className="p-2.5 rounded-full text-text-secondary transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed enabled:hover:bg-accent-hover enabled:hover:text-text-primary"
+            aria-label="Send message"
+          >
+            <SendIcon className="w-5 h-5" />
+          </button>
+        )}
         <input 
           type="file" 
           ref={fileInputRef} 
@@ -104,44 +137,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isS
           className="hidden" 
           multiple 
           accept="image/*,text/*,.pdf,.csv,.json,.md,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
-        />
-        <button
-          onClick={() => setIsSearchActive(!isSearchActive)}
-          className={`p-2 rounded-full transition-colors ${isSearchActive ? 'bg-blue-500/20 text-blue-400' : 'enabled:hover:bg-accent-hover'}`}
-          aria-pressed={isSearchActive}
-          title="Toggle Web Search"
-          aria-label="Toggle Web Search"
-        >
-          <SearchIcon className="w-6 h-6" />
-        </button>
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isStreaming || files.length >= 20}
-          className="p-2 rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed enabled:hover:bg-accent-hover"
-          aria-label="Attach file"
-          title="Attach file"
-        >
-          <PaperclipIcon className="w-6 h-6" />
-        </button>
-        <textarea
-          ref={textareaRef}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={isSearchActive ? "Search the web or send a message..." : "Send a message, or paste a file..."}
-          className="flex-1 bg-transparent resize-none p-2 text-text-primary placeholder-text-secondary focus:outline-none"
-          rows={1}
           disabled={isStreaming}
-          aria-label="Chat input"
         />
-        <button
-          onClick={handleSend}
-          disabled={isStreaming || (!text.trim() && files.length === 0)}
-          className="p-2 rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed enabled:hover:bg-accent-hover"
-          aria-label="Send message"
-        >
-          <SendIcon className="w-6 h-6" />
-        </button>
       </div>
     </div>
   );

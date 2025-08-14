@@ -19,7 +19,7 @@ export const Header: React.FC<HeaderProps> = ({ onShare, hasActiveChat, onMenuCl
     }
 
     return (
-        <header className="flex items-center justify-between p-4 h-16 border-b border-border md:border-b-0">
+        <header className="flex items-center justify-between p-2 h-16 border-b border-border flex-shrink-0">
             <button
                 onClick={onMenuClick}
                 className="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface transition-colors md:hidden"
@@ -31,12 +31,12 @@ export const Header: React.FC<HeaderProps> = ({ onShare, hasActiveChat, onMenuCl
                 <button 
                     onClick={handleShareClick}
                     disabled={!hasActiveChat || copied}
-                    className="p-2 border border-border rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="p-2 border border-border rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                     aria-label="Share Chat"
                 >
                     {copied ? <CheckIcon className="w-5 h-5 text-green-500" /> : <ShareIcon className="w-5 h-5" />}
                 </button>
-                 <button className="w-8 h-8 flex items-center justify-center bg-surface border border-border rounded-full">
+                 <button className="w-9 h-9 flex items-center justify-center bg-surface border border-border rounded-full hover:bg-accent-hover transition-colors duration-200">
                     <UserIcon className="w-5 h-5" />
                  </button>
             </div>

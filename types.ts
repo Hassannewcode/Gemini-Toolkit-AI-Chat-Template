@@ -26,6 +26,7 @@ export interface Message {
   attachments?: { name: string; type: string; data: string; }[];
   files?: { filename: string; content: string; }[];
   groundingMetadata?: any;
+  timing?: { [key: string]: number };
 }
 
 export interface Chat {
@@ -35,5 +36,18 @@ export interface Chat {
   sandboxState?: {
     code: string;
     language: string;
+    consoleOutput?: { type: string; message: string }[];
   } | null;
 }
+
+export type MenuItem =
+  | {
+      label: string;
+      icon?: React.ReactNode;
+      action: () => void;
+      isSeparator?: false;
+      disabled?: boolean;
+    }
+  | {
+      isSeparator: true;
+    };
