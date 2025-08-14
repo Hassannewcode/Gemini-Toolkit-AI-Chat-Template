@@ -9,6 +9,8 @@ import { PreviewPanel } from './components/PreviewPanel';
 import { generateResponseStream } from './services/geminiService';
 import type { Part } from '@google/genai';
 
+declare var JSZip: any;
+
 const App: React.FC = () => {
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
@@ -88,8 +90,41 @@ const App: React.FC = () => {
     
     const controller = new AbortController();
     abortControllerRef.current = controller;
+
+    const expandedFiles: File[] = [];
+    for (const file of files) {
+        if ((file.type === 'application/zip' || file.type === 'application/x-zip-compressed' || file.name.endsWith('.zip')) && typeof JSZip !== 'undefined') {
+            try {
+                const zip = await JSZip.loadAsync(file);
+                for (const filename in zip.files) {
+                    if (!zip.files[filename].dir) {
+                        const zipFile = zip.files[filename];
+                        const blob = await zipFile.async('blob');
+                        
+                        const getMimeType = (name: string): string => {
+                          const ext = name.split('.').pop()?.toLowerCase();
+                          const mimeTypes: { [key: string]: string } = {
+                            'txt': 'text/plain', 'html': 'text/html', 'css': 'text/css', 'js': 'application/javascript',
+                            'json': 'application/json', 'xml': 'application/xml', 'md': 'text/markdown',
+                            'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif', 'svg': 'image/svg+xml'
+                          };
+                          return mimeTypes[ext || ''] || 'application/octet-stream';
+                        }
+
+                        const newFile = new File([blob], `${file.name}/${filename}`, { type: getMimeType(filename) });
+                        expandedFiles.push(newFile);
+                    }
+                }
+            } catch (e) {
+                console.error("Failed to process zip file", e);
+                expandedFiles.push(file); // Push original file if zip processing fails
+            }
+        } else {
+            expandedFiles.push(file);
+        }
+    }
     
-    const filePromises = files.map(file => {
+    const filePromises = expandedFiles.map(file => {
       return new Promise<{ name: string; type: string; dataUrl: string; base64Data: string }>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -119,6 +154,7 @@ const App: React.FC = () => {
       text: '',
       timestamp: Date.now(),
       status: AIStatus.Thinking,
+      reasoning: null,
     };
     
     let tempActiveChatId = activeChatId;
@@ -162,9 +198,9 @@ const App: React.FC = () => {
     try {
       const stream = generateResponseStream(text, history, geminiAttachments, controller.signal);
       
-      let planData: any = null;
+      let reasoningData: any = null;
       let buffer = '';
-      let isPlanFound = false;
+      let isReasoningFound = false;
 
       for await (const chunkText of stream) {
         if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -173,26 +209,34 @@ const App: React.FC = () => {
         let currentStatus = currentAIStatus;
         let textToSet = buffer;
 
-        if (!isPlanFound) {
-          const planEndIndex = buffer.indexOf('</plan>');
-          if (planEndIndex !== -1) {
-            const planStartIndex = buffer.indexOf('<plan>');
-            if (planStartIndex !== -1) {
+        if (!isReasoningFound) {
+          const reasoningEndIndex = buffer.indexOf('</reasoning>');
+          if (reasoningEndIndex !== -1) {
+            const reasoningStartIndex = buffer.indexOf('<reasoning>');
+            if (reasoningStartIndex !== -1) {
               try {
-                const planString = buffer.substring(planStartIndex + 6, planEndIndex);
-                planData = JSON.parse(planString);
-                isPlanFound = true;
+                const reasoningBlock = buffer.substring(reasoningStartIndex + 11, reasoningEndIndex);
+                
+                const thoughtMatch = reasoningBlock.match(/<thought>([\s\S]*?)<\/thought>/);
+                const critiqueMatch = reasoningBlock.match(/<critique>([\s\S]*?)<\/critique>/);
+                const planMatch = reasoningBlock.match(/<plan>([\s\S]*?)<\/plan>/);
+
+                const thought = thoughtMatch ? thoughtMatch[1].trim() : '';
+                const critique = critiqueMatch ? critiqueMatch[1].trim() : '';
+                const plan = planMatch ? JSON.parse(planMatch[1].trim()) : null;
+                
+                reasoningData = { thought, critique, plan };
+                isReasoningFound = true;
                 currentStatus = AIStatus.Generating;
-                // The rest of the buffer is part of the actual message
-                textToSet = buffer.substring(planEndIndex + 7);
+                textToSet = buffer.substring(reasoningEndIndex + 12).trimStart();
                 setCurrentAIStatus(AIStatus.Generating);
               } catch (e) {
-                console.error("Failed to parse plan", e);
-                isPlanFound = true; // Stop trying to parse
+                console.error("Failed to parse reasoning block", e);
+                isReasoningFound = true; // Stop trying
                 setCurrentAIStatus(AIStatus.Generating);
               }
-            } else if (buffer.length > 100) { // Failsafe
-                isPlanFound = true;
+            } else if (buffer.length > 200) { // Failsafe
+                isReasoningFound = true;
                 setCurrentAIStatus(AIStatus.Generating);
             }
           }
@@ -201,7 +245,7 @@ const App: React.FC = () => {
         setChats(prev => prev.map(chat => {
           if (chat.id === tempActiveChatId) {
             const updatedMessages = chat.messages.map(msg => 
-              msg.id === aiMessageId ? { ...msg, text: textToSet, plan: planData, status: currentStatus } : msg
+              msg.id === aiMessageId ? { ...msg, text: textToSet, reasoning: reasoningData ?? msg.reasoning, status: currentStatus } : msg
             );
             return { ...chat, messages: updatedMessages };
           }

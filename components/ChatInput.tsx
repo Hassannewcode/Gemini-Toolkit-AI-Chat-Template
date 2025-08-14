@@ -29,7 +29,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isS
   
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files) {
-      setFiles(prev => [...prev, ...Array.from(event.target.files!)].slice(0, 5)); // Limit to 5 files
+      setFiles(prev => [...prev, ...Array.from(event.target.files!)].slice(0, 20)); // Limit to 20 files
     }
     // Reset file input to allow selecting the same file again
     event.target.value = '';
@@ -92,11 +92,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isS
           onChange={handleFileChange}
           className="hidden" 
           multiple 
-          accept="image/*,text/*,.pdf,.csv,.json,.md"
+          accept="image/*,text/*,.pdf,.csv,.json,.md,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
         />
         <button
           onClick={() => fileInputRef.current?.click()}
-          disabled={isStreaming || files.length >= 5}
+          disabled={isStreaming || files.length >= 20}
           className="p-2 rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed enabled:hover:bg-accent-hover"
           aria-label="Attach file"
         >

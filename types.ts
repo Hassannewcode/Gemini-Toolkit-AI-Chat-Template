@@ -18,7 +18,11 @@ export interface Message {
   text: string;
   timestamp: number;
   status?: AIStatus;
-  plan?: any;
+  reasoning?: {
+    thought: string;
+    critique: string;
+    plan: any;
+  } | null;
   attachments?: { name: string; type: string; data: string; }[];
   files?: { filename: string; content: string; }[];
 }

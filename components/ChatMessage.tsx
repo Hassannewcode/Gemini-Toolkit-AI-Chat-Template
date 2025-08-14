@@ -1,57 +1,34 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Message, Sender, AIStatus } from '../types';
-import { UserIcon, SparklesIcon, CopyIcon, CheckIcon, CodeBracketIcon, EyeIcon, BoltIcon, PlusIcon } from './icons';
+import { UserIcon, SparklesIcon, CopyIcon, CheckIcon, CodeBracketIcon, EyeIcon, BoltIcon, PlusIcon, PaperclipIcon } from './icons';
 
 // --- Custom Hooks ---
 
 function useTypewriter(text: string, isStreaming: boolean) {
     const [displayedText, setDisplayedText] = useState('');
-    const requestRef = useRef<number | null>(null);
-    const lastTimeRef = useRef<number | null>(null);
-
-    const animate = (time: number) => {
-        if (!isStreaming) {
-            setDisplayedText(text);
-            return;
-        }
-        if (lastTimeRef.current != null) {
-            const deltaTime = time - lastTimeRef.current;
-            // Update text ~33 times per second
-            if (deltaTime > 30) { 
-                setDisplayedText(prev => text.slice(0, prev.length + 1));
-                lastTimeRef.current = time;
-            }
-        } else {
-            lastTimeRef.current = time;
-        }
-
-        requestRef.current = requestAnimationFrame(animate);
-    };
 
     useEffect(() => {
         if (!isStreaming) {
             setDisplayedText(text);
-            if (requestRef.current !== null) cancelAnimationFrame(requestRef.current);
             return;
         }
         
-        if (displayedText.length < text.length) {
-            lastTimeRef.current = performance.now();
-            requestRef.current = requestAnimationFrame(animate);
-        } else {
-             if (requestRef.current !== null) cancelAnimationFrame(requestRef.current);
+        let i = displayedText.length;
+        if (i < text.length) {
+            const timeoutId = setTimeout(() => {
+                setDisplayedText(text.slice(0, i + 1));
+            }, 20); // Adjust delay for speed. 20ms = 50 characters/sec
+            
+            return () => clearTimeout(timeoutId);
         }
+    }, [displayedText, text, isStreaming]);
 
-        return () => {
-            if (requestRef.current !== null) {
-                cancelAnimationFrame(requestRef.current);
-            }
-        };
-    }, [text, isStreaming, displayedText.length]);
-    
     useEffect(() => {
-        if (!text) setDisplayedText('');
-    }, [text]);
+        // Reset displayed text when the source text changes (i.e., new message)
+        if (!isStreaming) {
+             setDisplayedText(text);
+        }
+    }, [text, isStreaming]);
 
     return displayedText;
 }
@@ -68,7 +45,13 @@ const AttachmentsPreview: React.FC<{ attachments: Message['attachments'] }> = ({
         <div className="flex flex-wrap gap-2 mb-2">
             {attachments.map((file, index) => (
                 <div key={index} className="bg-surface p-1.5 rounded-lg flex items-center gap-2 text-xs border border-border">
-                    <img src={file.data} alt={file.name} className="w-10 h-10 rounded-md object-cover" />
+                    {file.type.startsWith('image/') ? (
+                      <img src={file.data} alt={file.name} className="w-10 h-10 rounded-md object-cover" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-md bg-accent-hover flex items-center justify-center flex-shrink-0">
+                         <PaperclipIcon className="w-5 h-5 text-text-secondary"/>
+                      </div>
+                    )}
                     <span className="text-text-secondary truncate max-w-[150px]">{file.name}</span>
                 </div>
             ))}
@@ -110,10 +93,10 @@ const FileDownloads: React.FC<{ files: Message['files'] }> = ({ files }) => {
     );
 };
 
-const PlanDisplay: React.FC<{ plan: any, status: AIStatus }> = ({ plan, status }) => {
-    if (!plan && status !== AIStatus.Thinking) return null;
+const ReasoningDisplay: React.FC<{ reasoning: Message['reasoning'], status: AIStatus }> = ({ reasoning, status }) => {
+    if (!reasoning && status !== AIStatus.Thinking) return null;
     
-    if (status === AIStatus.Thinking || !plan) {
+    if (status === AIStatus.Thinking || !reasoning) {
          return (
              <div className="flex items-center gap-3 text-sm text-text-secondary animate-pulse my-2">
                  <BoltIcon className="w-4 h-4" />
@@ -123,15 +106,38 @@ const PlanDisplay: React.FC<{ plan: any, status: AIStatus }> = ({ plan, status }
     }
 
     return (
-        <details className="text-sm my-2 group">
-            <summary className="cursor-pointer text-text-secondary hover:text-text-primary transition-colors flex items-center gap-2">
-                <BoltIcon className="w-4 h-4" />
-                Show reasoning
+        <details className="text-sm my-4 group bg-black/20 border border-border rounded-lg" open>
+            <summary className="cursor-pointer text-text-secondary hover:text-text-primary transition-colors flex items-center justify-between gap-2 p-3">
+                <div className="flex items-center gap-2 font-medium">
+                    <BoltIcon className="w-4 h-4" />
+                    Reasoning
+                </div>
                 <PlusIcon className="w-4 h-4 group-open:rotate-45 transition-transform" />
             </summary>
-            <pre className="mt-2 p-3 bg-black/50 border border-border rounded-lg text-xs text-text-secondary overflow-x-auto">
-                <code>{JSON.stringify(plan, null, 2)}</code>
-            </pre>
+            <div className="p-3 border-t border-border space-y-4">
+                {reasoning.thought && (
+                    <div>
+                        <h4 className="font-semibold text-text-primary mb-1">Thought Process</h4>
+                        <p className="text-text-secondary whitespace-pre-wrap">{reasoning.thought}</p>
+                    </div>
+                )}
+                 {reasoning.critique && (
+                    <div>
+                        <h4 className="font-semibold text-text-primary mb-1">Self-Critique</h4>
+                        <p className="text-text-secondary whitespace-pre-wrap">{reasoning.critique}</p>
+                    </div>
+                )}
+                {reasoning.plan && Array.isArray(reasoning.plan) && (
+                     <div>
+                        <h4 className="font-semibold text-text-primary mb-1">Final Plan</h4>
+                        <ul className="list-decimal list-inside text-text-secondary space-y-1">
+                            {reasoning.plan.map((step, i) => (
+                                <li key={i}>{step.step} <span className="text-xs text-text-tertiary font-mono bg-surface px-1 py-0.5 rounded">({step.tool})</span></li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+            </div>
         </details>
     );
 };
@@ -316,7 +322,7 @@ export const ChatMessage: React.FC<{ message: Message, onPreviewCode: (code: str
       </div>
   );
   
-  const showPlan = !isUser && (message.plan || message.status === AIStatus.Thinking);
+  const showReasoning = !isUser && (message.reasoning || message.status === AIStatus.Thinking);
 
   return (
     <div className={`flex items-start gap-4 animate-slide-in`}>
@@ -327,7 +333,7 @@ export const ChatMessage: React.FC<{ message: Message, onPreviewCode: (code: str
         <AttachmentsPreview attachments={message.attachments} />
         {isUser && <p className="text-text-primary/90 leading-relaxed whitespace-pre-wrap">{message.text}</p>}
         
-        {showPlan && <PlanDisplay plan={message.plan} status={message.status!} />}
+        {showReasoning && <ReasoningDisplay reasoning={message.reasoning} status={message.status!} />}
         
         {!isUser && (
             <div className="text-text-primary/90 space-y-4 leading-relaxed">

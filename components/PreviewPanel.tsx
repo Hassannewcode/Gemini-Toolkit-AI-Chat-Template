@@ -36,12 +36,29 @@ const buildSrcDoc = (code: string, language: string) => {
       ` : `<div style="padding: 20px; text-align: center; color: #888; font-family: sans-serif; font-size: 16px;"><strong>Error: Could not find a React component to render.</strong><br>Please ensure your file contains a component with a PascalCase name (e.g., <code>function MyComponent() {}</code>) that can be rendered.</div>`;
 
     const consoleInterceptor = `
-      const postMsg = (type, args) => window.parent.postMessage({ source: 'preview-iframe', type, payload: args.map(arg => arg instanceof Error ? arg.message : String(arg)).join(' ') }, '*');
+      const formatArg = (arg) => {
+        if (arg instanceof Error) {
+          return \`Error: \${arg.message}\\n\${arg.stack}\`;
+        }
+        if (typeof arg === 'object' && arg !== null) {
+          try {
+            return JSON.stringify(arg, null, 2);
+          } catch (e) {
+            return String(arg);
+          }
+        }
+        return String(arg);
+      };
+      const postMsg = (type, args) => {
+        const payload = args.map(formatArg).join(' ');
+        window.parent.postMessage({ source: 'preview-iframe', type, payload }, '*');
+      };
       ['log', 'warn', 'error'].forEach(type => {
         const original = console[type];
         console[type] = (...args) => { postMsg(type, args); original.apply(console, args); };
       });
-      window.addEventListener('error', e => postMsg('error', [e.message]));
+      window.addEventListener('error', e => postMsg('error', [e.message, e.filename, e.lineno]));
+      window.addEventListener('unhandledrejection', e => postMsg('error', ['Unhandled Promise Rejection:', e.reason]));
     `;
     return `<!DOCTYPE html><html><head>
         <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
@@ -219,7 +236,7 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
   const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab);
   const [editorCode, setEditorCode] = useState(code);
   const [srcDoc, setSrcDoc] = useState('');
-  const [consoleOutput, setConsoleOutput] = useState<string[]>([]);
+  const [consoleOutput, setConsoleOutput] = useState<{ type: string; message: string }[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const pyodideRef = useRef<any>(null);
   const [isPyodideReady, setIsPyodideReady] = useState(false);
@@ -244,17 +261,17 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
 
   useEffect(() => {
     const initPyodide = async () => {
-      setConsoleOutput(['Initializing Python environment...']);
+      setConsoleOutput([{ type: 'info', message: 'Initializing Python environment...' }]);
       try {
         const pyodide = await window.loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/" });
-        setConsoleOutput(prev => [...prev, 'Loading numpy and pandas...']);
+        setConsoleOutput(prev => [...prev, { type: 'info', message: 'Loading numpy and pandas...' }]);
         await pyodide.loadPackage(['numpy', 'pandas']);
         pyodideRef.current = pyodide;
         setIsPyodideReady(true);
-        setConsoleOutput(prev => [...prev, 'Python environment ready.']);
+        setConsoleOutput(prev => [...prev, { type: 'info', message: 'Python environment ready.' }]);
       } catch (error) {
         console.error("Pyodide loading failed:", error);
-        setConsoleOutput(prev => [...prev, `Error: Failed to initialize Python environment. ${(error as Error).message}`]);
+        setConsoleOutput(prev => [...prev, { type: 'error', message: `Failed to initialize Python environment. ${(error as Error).message}` }]);
       }
     };
     if (isPython && !pyodideRef.current) {
@@ -287,9 +304,10 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
     const handleIframeMessages = (event: MessageEvent) => {
       if (event.data?.source === 'preview-iframe') {
         setActiveTab('console');
-        setConsoleOutput(prev => [...prev, `[PREVIEW:${event.data.type.toUpperCase()}] ${event.data.payload}`]);
-        if (event.data.type === 'error') {
-            setFixableError({ message: event.data.payload, type: 'preview' });
+        const { type, payload } = event.data;
+        setConsoleOutput(prev => [...prev, { type: type, message: `[PREVIEW] ${payload}` }]);
+        if (type === 'error') {
+            setFixableError({ message: payload, type: 'preview' });
         }
       }
     };
@@ -299,22 +317,22 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
 
   const runPython = useCallback(async (pyCode: string) => {
     if (!pyodideRef.current || !isPyodideReady) {
-        setConsoleOutput(prev => [...prev, `[ERROR] Python environment not ready.`]);
+        setConsoleOutput(prev => [...prev, { type: 'error', message: `Python environment not ready.` }]);
         return null;
     }
     setIsRunning(true);
     let result = null;
     try {
       const pyodide = pyodideRef.current;
-      pyodide.setStdout({ batched: (msg: string) => setConsoleOutput(prev => [...prev, msg]) });
+      pyodide.setStdout({ batched: (msg: string) => setConsoleOutput(prev => [...prev, { type: 'log', message: msg }]) });
       pyodide.setStderr({ batched: (msg: string) => {
-        setConsoleOutput(prev => [...prev, `[ERROR] ${msg}`]);
+        setConsoleOutput(prev => [...prev, { type: 'error', message: msg }]);
         setFixableError({ message: msg, type: 'console' });
       }});
       result = await pyodide.runPythonAsync(pyCode);
     } catch (err) {
       const errorMessage = (err as Error).message;
-      setConsoleOutput(prev => [...prev, `[CRITICAL ERROR] ${errorMessage}`]);
+      setConsoleOutput(prev => [...prev, { type: 'error', message: `CRITICAL ERROR: ${errorMessage}` }]);
       setFixableError({ message: errorMessage, type: 'console' });
     } finally {
       setIsRunning(false);
@@ -324,7 +342,7 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
 
   const handleRunCode = useCallback((codeToRun: string) => {
     if (!isPython || !isPyodideReady) return;
-    setConsoleOutput([`Running code...`]);
+    setConsoleOutput([{ type: 'info', message: 'Running code...' }]);
     setFixableError(null);
     setAnalysis(null);
     setActiveTab('console');
@@ -332,15 +350,15 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
       if (language === 'python-api') {
         const endpoints = parsePythonFunctions(codeToRun);
         setApiEndpoints(endpoints);
-        setConsoleOutput(prev => [...prev, "API environment is ready."]);
+        setConsoleOutput(prev => [...prev, { type: 'info', message: "API environment is ready." }]);
         if (endpoints.length > 0) {
-            setConsoleOutput(prev => [...prev, "Switched to API Runner tab."]);
+            setConsoleOutput(prev => [...prev, { type: 'info', message: "Switched to API Runner tab." }]);
             setActiveTab('api');
         } else {
-            setConsoleOutput(prev => [...prev, "No API functions found. Remained on Console tab."]);
+            setConsoleOutput(prev => [...prev, { type: 'warn', message: "No API functions found. Remained on Console tab." }]);
         }
       } else {
-        setConsoleOutput(prev => [...prev, "Script finished."]);
+        setConsoleOutput(prev => [...prev, { type: 'info', message: "Script finished." }]);
       }
     });
   }, [isPython, isPyodideReady, language, runPython]);
@@ -383,14 +401,14 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
     if (!fixableError) return;
     setIsAnalyzing(true);
     setAnalysis(null);
-    setConsoleOutput(prev => [...prev, '[AI] Analyzing the error...']);
+    setConsoleOutput(prev => [...prev, { type: 'info', message: '[AI] Analyzing the error...' }]);
     try {
         const result = await analyzeAndFixCode(editorCode, language, fixableError.message);
         setAnalysis(result);
-        setConsoleOutput(prev => [...prev, '[AI] Analysis complete. Review the proposed fix.']);
+        setConsoleOutput(prev => [...prev, { type: 'info', message: '[AI] Analysis complete. Review the proposed fix.' }]);
     } catch (error) {
         console.error('Analysis failed:', error);
-        setConsoleOutput(prev => [...prev, `[AI-ERROR] Analysis failed: ${(error as Error).message}`]);
+        setConsoleOutput(prev => [...prev, { type: 'error', message: `[AI] Analysis failed: ${(error as Error).message}` }]);
         setFixableError(null);
     } finally {
         setIsAnalyzing(false);
@@ -402,7 +420,7 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
     onCodeUpdate(analysis.fixedCode);
     setAnalysis(null);
     setFixableError(null);
-    setConsoleOutput(prev => [...prev, '[AI] Fix applied.']);
+    setConsoleOutput(prev => [...prev, { type: 'info', message: '[AI] Fix applied.' }]);
   };
 
   const discardFix = () => {
@@ -480,7 +498,7 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
         
         <main className="flex-1 bg-background overflow-auto">
             {activeTab === 'editor' && (
-                <textarea value={editorCode} onChange={handleEditorChange} className="w-full h-full bg-transparent text-text-primary p-4 resize-none font-mono text-sm leading-6 focus:outline-none" spellCheck="false" aria-label="Code Editor"/>
+                <textarea value={editorCode} onChange={handleEditorChange} onBlur={() => onCodeUpdate(editorCode)} className="w-full h-full bg-transparent text-text-primary p-4 resize-none font-mono text-sm leading-6 focus:outline-none" spellCheck="false" aria-label="Code Editor"/>
             )}
             
             {activeTab === 'preview' && !isPython && (
@@ -510,8 +528,8 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ code, language, onCl
             {activeTab === 'console' && (
                 <div className="w-full h-full p-4 font-mono text-xs text-text-secondary overflow-y-auto">
                     {consoleOutput.map((line, index) => (
-                        <pre key={index} className={`whitespace-pre-wrap ${line.startsWith('[ERROR]') || line.startsWith('[CRITICAL') ? 'text-red-400' : line.startsWith('[AI') ? 'text-blue-300' : ''}`}>
-                            <span className="select-none text-text-tertiary mr-2">{'>'}</span>{line}
+                        <pre key={index} className={`whitespace-pre-wrap ${line.type === 'error' ? 'text-red-400' : line.type === 'info' ? 'text-blue-300' : ''}`}>
+                            <span className="select-none text-text-tertiary mr-2">{'>'}</span>{line.message}
                         </pre>
                     ))}
                 </div>
