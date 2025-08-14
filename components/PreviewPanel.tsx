@@ -89,7 +89,7 @@ const FileExplorer: React.FC<{
                         <button onClick={() => toggleFolder(currentPath)} className="w-full flex items-center gap-2 text-left px-2 py-1.5 text-sm text-text-secondary hover:bg-surface/50 rounded-md">
                             <span style={{ paddingLeft: `${indent * 1}rem` }}/>
                             {isOpen ? <ChevronDownIcon className="w-4 h-4" /> : <ChevronRightIcon className="w-4 h-4" />}
-                            <FolderIcon className="w-5 h-5 text-yellow-500/80" />
+                            <FolderIcon className="w-5 h-5" />
                             <span>{name}</span>
                         </button>
                         {isOpen && <div className="pl-2">{renderTree(content, currentPath)}</div>}
@@ -127,7 +127,7 @@ const FileExplorer: React.FC<{
 };
 
 // --- Preview Component ---
-const Preview: React.FC<{ code: string; language: string; onConsoleUpdate: (line: { type: string, message: string }) => void }> = ({ code, language, onConsoleUpdate }) => {
+const Preview: React.FC<{ files: { [path: string]: SandboxFile }, onConsoleUpdate: (line: { type: string, message: string }) => void }> = ({ files, onConsoleUpdate }) => {
     const [srcDoc, setSrcDoc] = useState('');
     const [refreshKey, setRefreshKey] = useState(0);
 
@@ -176,28 +176,36 @@ const Preview: React.FC<{ code: string; language: string; onConsoleUpdate: (line
 
     useEffect(() => {
         const handler = setTimeout(() => {
-            let finalSrcDoc = 'Unsupported file type for preview.';
-            if (language === 'html') {
-                finalSrcDoc = buildSrcDoc(code, '', '');
-            } else if (language === 'jsx' || language === 'javascript') {
-                const jsCode = language === 'jsx' ?
-                    `
-                    import React from 'react';
-                    import ReactDOM from 'react-dom/client';
-                    ${code}
-                    const container = document.getElementById('root');
-                    const Component = ${code.match(/export\s+default\s+function\s+(\w+)/)?.[1] || code.match(/const\s+([A-Z]\w*)\s*=/)?.[1] || 'App'};
-                    if(container && Component) {
-                        const root = ReactDOM.createRoot(container);
-                        root.render(<Component />);
-                    }
-                    ` : code;
-                 finalSrcDoc = buildSrcDoc('<div id="root"></div>', '', jsCode);
+            const htmlFiles = Object.entries(files).filter(([, file]) => file.language === 'html');
+            const cssFiles = Object.entries(files).filter(([, file]) => file.language === 'css');
+            const jsFiles = Object.entries(files).filter(([, file]) => ['javascript', 'jsx'].includes(file.language));
+
+            // Sort JS files to put entry points last for execution order
+            jsFiles.sort(([pathA], [pathB]) => {
+                const isIndexA = /index\.(js|jsx)$/.test(pathA);
+                const isIndexB = /index\.(js|jsx)$/.test(pathB);
+                if (isIndexA && !isIndexB) return 1;
+                if (!isIndexA && isIndexB) return -1;
+                return pathA.localeCompare(pathB);
+            });
+            
+            let htmlCode = '<div id="root"></div>';
+            // Prefer index.html, but fall back to any other html file.
+            const indexHtmlFile = htmlFiles.find(([path]) => path === 'index.html') || htmlFiles[0];
+            if (indexHtmlFile) {
+                htmlCode = indexHtmlFile[1].code;
             }
+
+            const cssCode = cssFiles.map(([, file]) => file.code).join('\n\n');
+            const jsCode = jsFiles.map(([, file]) => file.code).join('\n\n');
+            
+            const finalSrcDoc = buildSrcDoc(htmlCode, cssCode, jsCode);
+
             setSrcDoc(finalSrcDoc);
         }, 250);
         return () => clearTimeout(handler);
-    }, [code, language, buildSrcDoc, refreshKey]);
+    }, [files, buildSrcDoc, refreshKey]);
+
 
     useEffect(() => {
         const handleIframeMessages = (event: MessageEvent) => {
@@ -273,9 +281,10 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
     );
     
     const isPreviewable = useMemo(() => {
-        if (!activeSandboxFile) return false;
-        return ['html', 'jsx', 'javascript'].includes(activeSandboxFile.language);
-    }, [activeSandboxFile]);
+        if (!files) return false;
+        return Object.values(files).some(file => ['html', 'jsx', 'javascript', 'css'].includes(file.language));
+    }, [files]);
+
 
     return (
         <div className="flex w-full h-full bg-background border-l border-border">
@@ -311,7 +320,7 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
                                     <textarea value={activeSandboxFile.code} onChange={(e) => handleCodeChange(e.target.value)} className="w-full h-full bg-transparent text-text-primary p-4 resize-none font-mono text-sm leading-6 focus:outline-none" spellCheck="false"/>
                                 )}
                                 {activeView === 'preview' && isPreviewable && (
-                                    <Preview code={activeSandboxFile.code} language={activeSandboxFile.language} onConsoleUpdate={handleConsoleUpdate} />
+                                    <Preview files={files} onConsoleUpdate={handleConsoleUpdate} />
                                 )}
                                 {activeView === 'console' && (
                                      <div data-context-menu-id="preview-console" className="w-full h-full p-4 font-mono text-xs text-text-secondary overflow-y-auto">
@@ -320,7 +329,7 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
                                               <pre className={`whitespace-pre-wrap flex-1 ${line.type === 'error' ? 'text-red-400' : line.type === 'info' ? 'text-blue-300' : ''}`}>
                                                   <span className="select-none text-text-tertiary mr-2">{'>'}</span>{line.message}
                                               </pre>
-                                              {line.type === 'error' && (
+                                              {line.type === 'error' && activeSandboxFile && (
                                                   <button
                                                       onClick={() => onAutoFixRequest(line.message, activeSandboxFile.code, activeSandboxFile.language)}
                                                       className="flex items-center gap-1.5 text-xs text-yellow-400/70 border border-yellow-400/20 bg-yellow-400/10 rounded-md px-2 py-1 ml-4 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-yellow-400/20 hover:text-yellow-300"
