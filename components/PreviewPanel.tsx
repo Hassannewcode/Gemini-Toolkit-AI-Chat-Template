@@ -235,10 +235,11 @@ const ExecutionView: React.FC<{
                     <div className="flex items-center justify-between p-1.5 border-b border-border flex-shrink-0">
                         <button
                             onClick={() => onExecute(projectType)}
-                            className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 text-green-400 rounded-md font-medium text-sm hover:bg-green-500/20 transition-colors"
+                            title="Asks the AI to execute the code and return the output. This is a simulation, not a live execution environment."
+                            className="flex items-center gap-2 px-3 py-1.5 bg-purple-500/10 text-purple-400 rounded-md font-medium text-sm hover:bg-purple-500/20 transition-colors"
                         >
-                            <PlayIcon className="w-4 h-4" />
-                            Run Project
+                            <BoltIcon className="w-4 h-4" />
+                            Run with AI
                         </button>
                         <div className="flex items-center">
                             {consoleOutput && consoleOutput.length > 0 && (
@@ -265,8 +266,8 @@ const ExecutionView: React.FC<{
                         ) : (
                             <div className="text-center text-text-tertiary pt-8 h-full flex flex-col items-center justify-center">
                                 <TerminalIcon className="w-12 h-12 text-text-tertiary/50 mb-4" />
-                                <p>Click "Run Project" to execute the code.</p>
-                                <p className="text-xs mt-1">Output will appear here.</p>
+                                <p>Click "Run with AI" to ask Gemini to execute the project.</p>
+                                <p className="text-xs mt-1">The simulated output will appear here.</p>
                             </div>
                         )}
                     </div>
