@@ -68,6 +68,13 @@ Before your main response, you MUST output your internal design and development 
   { "operation": "delete", "path": "old.js" }
 ]
   \`\`\`
+- **Code Execution**: When asked to run a non-web project (e.g., Python, Node.js), simulate the execution and provide the standard output (\`stdout\`) and any errors (\`stderr\`) within a markdown code block with the language identifier \`stdout\`. This output will be programmatically extracted and displayed in the sandbox console. Do not add any other text outside this block if the request is purely for execution.
+
+  **Example Execution Response:**
+  \`\`\`stdout
+  Hello from Python!
+  This is a line from stderr.
+  \`\`\`
 - **Legacy Code Generator**: You can still use markdown code blocks (\`\`\`jsx) for simple, single-component snippets. These will appear in the chat and have an "Open in Sandbox" button. Use the File System Sandbox for any multi-file or complete project requests.
 `;
 

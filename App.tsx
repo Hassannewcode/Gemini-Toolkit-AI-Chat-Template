@@ -126,7 +126,7 @@ const App: React.FC = () => {
         tempActiveChatId = `chat-${Date.now()}`;
         const newChat: Chat = {
             id: tempActiveChatId,
-            title: isSystemMessage ? 'Auto-Fix Analysis' : chatTitle,
+            title: isSystemMessage ? 'System Command' : chatTitle,
             messages: [userMessage, initialAIMessage],
         };
         setChats(prev => [newChat, ...prev]);
@@ -263,17 +263,30 @@ const App: React.FC = () => {
         
         setChats(prev => prev.map(chat => {
             if (chat.id === tempActiveChatId) {
-                const finalMessages = chat.messages.map(msg =>
-                    msg.id === aiMessageId ? { ...msg, status: AIStatus.Idle } : msg
-                );
-                
-                const aiFinalMessage = finalMessages.find(msg => msg.id === aiMessageId);
+                const finalMessages = [...chat.messages];
+                const aiFinalMessageIndex = finalMessages.findIndex(msg => msg.id === aiMessageId);
+                if (aiFinalMessageIndex === -1) return chat;
+
+                const aiFinalMessage = finalMessages[aiFinalMessageIndex];
                 let finalSandboxState = chat.sandboxState;
                 let newText = aiFinalMessage?.text || '';
 
                 if (aiFinalMessage) {
-                  // New: Handle filesystem operations
-                  const filesJsonMatch = aiFinalMessage.text.match(/```json:files\n([\s\S]*?)```/);
+                  // New: Handle stdout for code execution
+                  const stdoutMatch = newText.match(/```stdout\n([\s\S]*?)```/);
+                  if (stdoutMatch) {
+                      newText = newText.replace(stdoutMatch[0], '').trim();
+                      const output = stdoutMatch[1];
+                      if (output.trim()) {
+                          const consoleLines = output.split('\n').map(line => ({ type: 'log', message: line }));
+                          let sandbox = finalSandboxState || { files: {}, openFiles: [], activeFile: null, consoleOutput: [] };
+                          sandbox.consoleOutput = [...(sandbox.consoleOutput || []), ...consoleLines];
+                          finalSandboxState = sandbox;
+                      }
+                  }
+
+                  // Handle filesystem operations
+                  const filesJsonMatch = newText.match(/```json:files\n([\s\S]*?)```/);
                   if (filesJsonMatch) {
                     newText = newText.replace(filesJsonMatch[0], '').trim();
                     try {
@@ -325,13 +338,23 @@ const App: React.FC = () => {
                   while ((fileMatch = fileCreationRegex.exec(aiFinalMessage.text)) !== null) {
                     newText = newText.replace(fileMatch[0], '').trim();
                   }
-
-                  finalMessages[finalMessages.length - 1] = {
+                  
+                  finalMessages[aiFinalMessageIndex] = {
                       ...aiFinalMessage,
                       text: newText,
                       status: AIStatus.Idle
                   };
                 }
+                
+                // If the user's message was a system command and the AI's response is empty, remove both
+                if (isSystemMessage && !finalMessages[aiFinalMessageIndex].text.trim()) {
+                    const userMessageIndex = finalMessages.findIndex(m => m.id === userMessage.id);
+                    finalMessages.splice(aiFinalMessageIndex, 1);
+                    if (userMessageIndex !== -1) {
+                       finalMessages.splice(userMessageIndex, 1);
+                    }
+                }
+
                 return { ...chat, messages: finalMessages, sandboxState: finalSandboxState };
             }
             return chat;
@@ -422,6 +445,18 @@ Please analyze all errors and the code, explain the causes, and provide a single
     
     _sendMessage(prompt, [], false, true);
   }, [activeChat, _sendMessage]);
+
+  const handleExecuteRequest = useCallback((language: string) => {
+    if (!activeChat?.sandboxState) return;
+
+    const fileContents = Object.entries(activeChat.sandboxState.files)
+        .map(([path, file]) => `--- ${path} ---\n${file.code}`)
+        .join('\n\n');
+
+    const prompt = `Please run the following ${language} project and provide the complete standard output in a \`\`\`stdout\`\`\` block. Do not add any other commentary. The project files are:\n\n${fileContents}`;
+    
+    _sendMessage(prompt, [], false, true);
+}, [activeChat?.sandboxState, _sendMessage]);
 
   const handleNewChat = () => {
     handleStop();
@@ -613,6 +648,7 @@ Please analyze all errors and the code, explain the causes, and provide a single
               onClose={() => setSandboxState(null)}
               onUpdate={handleSandboxUpdate}
               onAutoFixRequest={handleAutoFixRequest}
+              onExecuteRequest={handleExecuteRequest}
             />
           </div>
         )}

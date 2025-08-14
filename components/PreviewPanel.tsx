@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Chat, SandboxFile } from '../types';
-import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, FolderIcon, FileIcon, ChevronRightIcon, ChevronDownIcon, PlusIcon, PencilIcon, TrashIcon, RefreshIcon } from './icons';
+import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, FolderIcon, FileIcon, ChevronRightIcon, ChevronDownIcon, PlusIcon, PencilIcon, TrashIcon, RefreshIcon, PythonIcon, JavaScriptIcon } from './icons';
 
 type SandboxProps = {
   sandboxState: NonNullable<Chat['sandboxState']>;
   onClose: () => void;
   onUpdate: (updater: (prevState: Chat['sandboxState']) => Chat['sandboxState']) => void;
   onAutoFixRequest: (error: string, code: string, language: string) => void;
+  onExecuteRequest: (language: string) => void;
 };
 
 type ActiveView = 'editor' | 'preview' | 'console';
@@ -69,9 +70,9 @@ const FileExplorer: React.FC<{
         const name = prompt("Enter new file name (e.g., 'src/new.js'):");
         if (!name) return;
         onUpdate(prev => ({
-            ...prev,
-            files: { ...prev.files, [name]: { code: '', language: name.split('.').pop() || 'text' } },
-            openFiles: [...prev.openFiles, name],
+            ...prev!,
+            files: { ...prev!.files, [name]: { code: '', language: name.split('.').pop() || 'text' } },
+            openFiles: [...prev!.openFiles, name],
             activeFile: name,
         }));
     };
@@ -89,7 +90,7 @@ const FileExplorer: React.FC<{
                         <button onClick={() => toggleFolder(currentPath)} className="w-full flex items-center gap-2 text-left px-2 py-1.5 text-sm text-text-secondary hover:bg-surface/50 rounded-md">
                             <span style={{ paddingLeft: `${indent * 1}rem` }}/>
                             {isOpen ? <ChevronDownIcon className="w-4 h-4" /> : <ChevronRightIcon className="w-4 h-4" />}
-                            <FolderIcon className="w-5 h-5" />
+                            <FolderIcon className="w-5 h-5 text-text-tertiary" />
                             <span>{name}</span>
                         </button>
                         {isOpen && <div className="pl-2">{renderTree(content, currentPath)}</div>}
@@ -126,11 +127,23 @@ const FileExplorer: React.FC<{
     );
 };
 
-// --- Preview Component ---
-const Preview: React.FC<{ files: { [path: string]: SandboxFile }, onConsoleUpdate: (line: { type: string, message: string }) => void }> = ({ files, onConsoleUpdate }) => {
+// --- ExecutionView Component ---
+const ExecutionView: React.FC<{ 
+    files: { [path: string]: SandboxFile }, 
+    onConsoleUpdate: (line: { type: string, message: string }) => void,
+    onExecute: (language: string) => void;
+}> = ({ files, onConsoleUpdate, onExecute }) => {
     const [srcDoc, setSrcDoc] = useState('');
     const [refreshKey, setRefreshKey] = useState(0);
 
+    const projectType = useMemo(() => {
+        const fileNames = Object.keys(files);
+        if (fileNames.some(name => name.endsWith('.py'))) return 'python';
+        if (fileNames.some(name => name.endsWith('index.js') && fileNames.includes('package.json'))) return 'node';
+        if (fileNames.some(name => name.endsWith('.html') || name.endsWith('.jsx') || name.endsWith('.js'))) return 'web';
+        return 'unknown';
+    }, [files]);
+    
     const consoleInterceptor = `
         const formatArg = (arg) => {
             if (arg instanceof Error) { return \`Error: \${arg.message}\\n\${arg.stack}\`; }
@@ -175,12 +188,13 @@ const Preview: React.FC<{ files: { [path: string]: SandboxFile }, onConsoleUpdat
     }, [consoleInterceptor]);
 
     useEffect(() => {
+        if (projectType !== 'web') return;
+
         const handler = setTimeout(() => {
             const htmlFiles = Object.entries(files).filter(([, file]) => file.language === 'html');
             const cssFiles = Object.entries(files).filter(([, file]) => file.language === 'css');
             const jsFiles = Object.entries(files).filter(([, file]) => ['javascript', 'jsx'].includes(file.language));
 
-            // Sort JS files to put entry points last for execution order
             jsFiles.sort(([pathA], [pathB]) => {
                 const isIndexA = /index\.(js|jsx)$/.test(pathA);
                 const isIndexB = /index\.(js|jsx)$/.test(pathB);
@@ -190,7 +204,6 @@ const Preview: React.FC<{ files: { [path: string]: SandboxFile }, onConsoleUpdat
             });
             
             let htmlCode = '<div id="root"></div>';
-            // Prefer index.html, but fall back to any other html file.
             const indexHtmlFile = htmlFiles.find(([path]) => path === 'index.html') || htmlFiles[0];
             if (indexHtmlFile) {
                 htmlCode = indexHtmlFile[1].code;
@@ -204,7 +217,7 @@ const Preview: React.FC<{ files: { [path: string]: SandboxFile }, onConsoleUpdat
             setSrcDoc(finalSrcDoc);
         }, 250);
         return () => clearTimeout(handler);
-    }, [files, buildSrcDoc, refreshKey]);
+    }, [files, buildSrcDoc, refreshKey, projectType]);
 
 
     useEffect(() => {
@@ -217,21 +230,58 @@ const Preview: React.FC<{ files: { [path: string]: SandboxFile }, onConsoleUpdat
         return () => window.removeEventListener('message', handleIframeMessages);
     }, [onConsoleUpdate]);
 
+    if (projectType === 'python' || projectType === 'node') {
+        return (
+            <div className="flex flex-col items-center justify-center h-full text-center text-text-secondary p-4 bg-background">
+                <div className="bg-surface p-8 rounded-xl border border-border shadow-lg max-w-sm animate-scale-in">
+                    {projectType === 'python' ? <PythonIcon className="w-16 h-16 mb-4 text-blue-400 mx-auto" /> : <JavaScriptIcon className="w-16 h-16 mb-4 mx-auto rounded-md" />}
+                    <h3 className="text-xl font-bold text-text-primary mb-2">
+                        {projectType === 'python' ? 'Python' : 'Node.js'} Project
+                    </h3>
+                    <p className="text-sm text-text-tertiary mb-6">
+                        This is a non-interactive view. Click the button to execute the code and see the output in the console.
+                    </p>
+                    <button 
+                        onClick={() => onExecute(projectType)} 
+                        className="w-full flex items-center justify-center gap-2.5 px-6 py-3 bg-accent text-background rounded-lg font-semibold hover:bg-opacity-90 transition-all duration-200 transform hover:scale-105"
+                    >
+                        <PlayIcon className="w-5 h-5" />
+                        Run Project
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    if (projectType === 'web') {
+        return (
+            <div className="w-full h-full flex flex-col bg-background">
+                 <div className="flex items-center p-1.5 border-b border-border flex-shrink-0">
+                    <div className="flex-grow" />
+                    <button onClick={() => setRefreshKey(k => k + 1)} className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors"><RefreshIcon className="w-5 h-5" /></button>
+                </div>
+                <div className="flex-1 bg-black/20 p-4">
+                    <iframe key={refreshKey} srcDoc={srcDoc} title="Preview" sandbox="allow-scripts allow-modals allow-same-origin" className="w-full h-full border-0 bg-white rounded-md shadow-lg" />
+                </div>
+            </div>
+        );
+    }
+    
     return (
-        <div className="w-full h-full flex flex-col bg-background">
-             <div className="flex items-center p-1.5 border-b border-border flex-shrink-0">
-                <div className="flex-grow" />
-                <button onClick={() => setRefreshKey(k => k + 1)} className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors"><RefreshIcon className="w-5 h-5" /></button>
-            </div>
-            <div className="flex-1 bg-black/20 p-4">
-                <iframe key={refreshKey} srcDoc={srcDoc} title="Preview" sandbox="allow-scripts allow-modals allow-same-origin" className="w-full h-full border-0 bg-white rounded-md shadow-lg" />
-            </div>
+        <div className="flex flex-col items-center justify-center h-full text-center text-text-secondary p-4">
+            <CodeBracketIcon className="w-16 h-16 mb-4 opacity-20"/>
+            <h3 className="text-lg font-semibold text-text-primary mb-2">
+                No Preview Available
+            </h3>
+            <p className="text-sm text-text-tertiary max-w-xs">
+                Could not determine project type. Make sure you have an entry file like 'index.html', 'main.py', or 'index.js'.
+            </p>
         </div>
     );
 };
 
 // --- Main Sandbox ---
-export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdate, onAutoFixRequest }) => {
+export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdate, onAutoFixRequest, onExecuteRequest }) => {
     const { files, openFiles, activeFile, consoleOutput } = sandboxState;
     const [activeView, setActiveView] = useState<ActiveView>('editor');
 
@@ -239,8 +289,8 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
 
     const handleSelectFile = (path: string) => {
         onUpdate(prev => {
-            const newOpenFiles = prev.openFiles.includes(path) ? prev.openFiles : [...prev.openFiles, path];
-            return { ...prev, activeFile: path, openFiles: newOpenFiles };
+            const newOpenFiles = prev!.openFiles.includes(path) ? prev!.openFiles : [...prev!.openFiles, path];
+            return { ...prev!, activeFile: path, openFiles: newOpenFiles };
         });
         setActiveView('editor');
     };
@@ -248,31 +298,29 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
     const handleCloseTab = (path: string, e: React.MouseEvent) => {
         e.stopPropagation();
         onUpdate(prev => {
-            const newOpenFiles = prev.openFiles.filter(p => p !== path);
-            let newActiveFile = prev.activeFile;
-            if (prev.activeFile === path) {
-                const closingIdx = prev.openFiles.indexOf(path);
+            const newOpenFiles = prev!.openFiles.filter(p => p !== path);
+            let newActiveFile = prev!.activeFile;
+            if (prev!.activeFile === path) {
+                const closingIdx = prev!.openFiles.indexOf(path);
                 newActiveFile = newOpenFiles[closingIdx] || newOpenFiles[closingIdx - 1] || null;
             }
-            return { ...prev, openFiles: newOpenFiles, activeFile: newActiveFile };
+            return { ...prev!, openFiles: newOpenFiles, activeFile: newActiveFile };
         });
     };
 
     const handleCodeChange = (newCode: string) => {
         if (activeFile) {
             onUpdate(prev => ({
-                ...prev,
-                files: { ...prev.files, [activeFile]: { ...prev.files[activeFile], code: newCode } }
+                ...prev!,
+                files: { ...prev!.files, [activeFile]: { ...prev!.files[activeFile], code: newCode } }
             }));
         }
     };
 
-    const handleConsoleUpdate = (line: { type: string, message: string }) => {
-        onUpdate(prev => ({ ...prev, consoleOutput: [...(prev.consoleOutput || []), line] }));
+    const handleConsoleUpdate = useCallback((line: { type: string, message: string }) => {
+        onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), line] }));
         setActiveView('console');
-    };
-
-    const handleClearConsole = () => onUpdate(prev => ({ ...prev, consoleOutput: [] }));
+    }, [onUpdate]);
 
     const TabButton: React.FC<{ view: ActiveView, children: React.ReactNode, disabled?: boolean }> = ({ view, children, disabled }) => (
         <button onClick={() => setActiveView(view)} disabled={disabled} data-active={activeView === view} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors duration-200 disabled:opacity-40 disabled:cursor-not-allowed border-b-2 data-[active=true]:border-accent data-[active=true]:text-text-primary border-transparent text-text-secondary hover:text-text-primary`}>
@@ -280,9 +328,9 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
         </button>
     );
     
-    const isPreviewable = useMemo(() => {
+    const isExecutable = useMemo(() => {
         if (!files) return false;
-        return Object.values(files).some(file => ['html', 'jsx', 'javascript', 'css'].includes(file.language));
+        return Object.keys(files).length > 0;
     }, [files]);
 
 
@@ -312,15 +360,15 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
                         <>
                             <nav className="flex items-stretch px-2 border-b border-border bg-surface/50">
                                 <TabButton view="editor"><CodeBracketIcon className="w-4 h-4"/> Editor</TabButton>
-                                <TabButton view="preview" disabled={!isPreviewable}><EyeIcon className="w-4 h-4"/> Preview</TabButton>
+                                <TabButton view="preview" disabled={!isExecutable}><PlayIcon className="w-4 h-4"/> Execute</TabButton>
                                 <TabButton view="console"><TerminalIcon className="w-4 h-4"/> Console</TabButton>
                             </nav>
                             <main className="flex-1 bg-background overflow-auto">
                                 {activeView === 'editor' && (
                                     <textarea value={activeSandboxFile.code} onChange={(e) => handleCodeChange(e.target.value)} className="w-full h-full bg-transparent text-text-primary p-4 resize-none font-mono text-sm leading-6 focus:outline-none" spellCheck="false"/>
                                 )}
-                                {activeView === 'preview' && isPreviewable && (
-                                    <Preview files={files} onConsoleUpdate={handleConsoleUpdate} />
+                                {activeView === 'preview' && isExecutable && (
+                                    <ExecutionView files={files} onConsoleUpdate={handleConsoleUpdate} onExecute={onExecuteRequest} />
                                 )}
                                 {activeView === 'console' && (
                                      <div data-context-menu-id="preview-console" className="w-full h-full p-4 font-mono text-xs text-text-secondary overflow-y-auto">
