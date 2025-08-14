@@ -12,6 +12,11 @@ export enum AIStatus {
   Error = 'error',
 }
 
+export interface SandboxFile {
+  code: string;
+  language: string;
+}
+
 export interface Message {
   id: string;
   sender: Sender;
@@ -34,8 +39,9 @@ export interface Chat {
   title: string;
   messages: Message[];
   sandboxState?: {
-    code: string;
-    language: string;
+    files: { [path: string]: SandboxFile };
+    openFiles: string[];
+    activeFile: string | null;
     consoleOutput?: { type: string; message: string }[];
   } | null;
 }
@@ -45,7 +51,7 @@ export type MenuItem =
       label: string;
       icon?: React.ReactNode;
       action: () => void;
-      isSeparator?: false;
+      isSeparator: false;
       disabled?: boolean;
     }
   | {

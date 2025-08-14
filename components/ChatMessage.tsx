@@ -183,10 +183,10 @@ interface CodeBlockProps {
     code: string;
     language: string;
     isComplete: boolean;
-    onPreview: (code: string, language: string) => void;
+    onOpenInSandbox: (code: string, language: string) => void;
 }
 
-const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, isComplete, onPreview }) => {
+const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, isComplete, onOpenInSandbox }) => {
     const [copied, setCopied] = useState(false);
     const codeRef = useRef<HTMLElement>(null);
 
@@ -203,14 +203,14 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, isComplete, onPre
         });
     };
     
-    const isPreviewable = useMemo(() => 
-        ['jsx', 'html', 'python', 'python-api', 'javascript'].includes(language), 
+    const isSandboxable = useMemo(() => 
+        ['jsx', 'html', 'python', 'python-api', 'javascript', 'css', 'json'].includes(language), 
         [language]
     );
 
-    const handlePreview = () => {
-        if (isPreviewable) {
-            onPreview(code, language);
+    const handleOpen = () => {
+        if (isSandboxable) {
+            onOpenInSandbox(code, language);
         }
     };
     
@@ -247,14 +247,14 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, isComplete, onPre
              <div className="flex items-center justify-between py-1.5 pr-2 pl-4 border-b border-border">
                 <span className="text-xs text-text-tertiary font-mono uppercase tracking-wider">{displayName}</span>
                 <div className="flex items-center gap-1">
-                    {isPreviewable && (
+                    {isSandboxable && (
                         <button
-                            onClick={handlePreview}
+                            onClick={handleOpen}
                             className="flex items-center gap-1.5 text-xs text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors p-1.5 rounded-md"
-                            aria-label="Preview code in sandbox"
+                            aria-label="Open code in sandbox"
                         >
                             <EyeIcon className="w-4 h-4" />
-                            Preview
+                            Open in Sandbox
                         </button>
                     )}
                     <button 
@@ -393,7 +393,7 @@ const GroundingCitations: React.FC<{ metadata: any }> = ({ metadata }) => {
 
 // --- Main Component ---
 
-export const ChatMessage: React.FC<{ message: Message, onPreviewCode: (code: string, language: string) => void }> = ({ message, onPreviewCode }) => {
+export const ChatMessage: React.FC<{ message: Message, onOpenInSandbox: (code: string, language: string) => void }> = ({ message, onOpenInSandbox }) => {
   const isUser = message.sender === Sender.User;
   const isStreaming = (message.status === AIStatus.Generating || message.status === AIStatus.Thinking) && !isUser;
   const displayedText = useTypewriter(message.text, isStreaming && message.status === AIStatus.Generating);
@@ -406,15 +406,18 @@ export const ChatMessage: React.FC<{ message: Message, onPreviewCode: (code: str
           if (codeMatch) {
               const language = codeMatch[1] || 'text';
               const code = codeMatch[2] || '';
+              // Don't treat json:files as a displayable code block
+              if (language === 'json:files') return null;
+
               const isPartComplete = message.text.includes(part);
-              return <CodeBlock key={index} language={language} code={code} isComplete={isPartComplete} onPreview={onPreviewCode} />;
+              return <CodeBlock key={index} language={language} code={code} isComplete={isPartComplete} onOpenInSandbox={onOpenInSandbox} />;
           }
           if (part.trim()) {
               return <MarkdownText key={index} text={part} />;
           }
           return null;
       });
-  }, [displayedText, message.text, onPreviewCode]);
+  }, [displayedText, message.text, onOpenInSandbox]);
 
 
   const icon = isUser ? (

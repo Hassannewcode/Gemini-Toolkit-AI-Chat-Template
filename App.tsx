@@ -4,8 +4,8 @@ import { ChatInput } from './components/ChatInput';
 import { ChatMessage } from './components/ChatMessage';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { Header } from './components/Header';
-import { AIStatus, Message, Sender, Chat, MenuItem } from './types';
-import { PreviewPanel } from './components/PreviewPanel';
+import { AIStatus, Message, Sender, Chat, MenuItem, SandboxFile } from './types';
+import { Sandbox } from './components/PreviewPanel';
 import { generateResponseStream } from './services/geminiService';
 import type { Part } from '@google/genai';
 import { ContextMenu } from './components/ContextMenu';
@@ -80,7 +80,7 @@ const App: React.FC = () => {
   
   const activeChat = chats.find(chat => chat.id === activeChatId);
   
-  const setSandboxState = useCallback((state: Chat['sandboxState']) => {
+  const setSandboxState = useCallback((state: Chat['sandboxState'] | null) => {
     if (activeChatId) {
         setChats(prev => prev.map(chat => 
             chat.id === activeChatId ? { ...chat, sandboxState: state } : chat
@@ -154,6 +154,7 @@ const App: React.FC = () => {
     const promptPayload = {
         query: text,
         files: attachments.map(f => ({ filename: f.name, type: f.type, size: f.size })),
+        sandbox: activeChat?.sandboxState
     };
     const promptJson = JSON.stringify(promptPayload, null, 2);
 
@@ -268,42 +269,75 @@ const App: React.FC = () => {
                 
                 const aiFinalMessage = finalMessages.find(msg => msg.id === aiMessageId);
                 let finalSandboxState = chat.sandboxState;
+                let newText = aiFinalMessage?.text || '';
 
                 if (aiFinalMessage) {
-                  const codeMatch = aiFinalMessage.text.match(/```(jsx|html|python|python-api|javascript)\n([\s\S]*?)```/);
-                  if (codeMatch) {
-                    finalSandboxState = { ...(finalSandboxState || { consoleOutput: [] }), language: codeMatch[1], code: codeMatch[2] };
+                  // New: Handle filesystem operations
+                  const filesJsonMatch = aiFinalMessage.text.match(/```json:files\n([\s\S]*?)```/);
+                  if (filesJsonMatch) {
+                    newText = newText.replace(filesJsonMatch[0], '').trim();
+                    try {
+                        const operations = JSON.parse(filesJsonMatch[1]);
+                        let sandbox = finalSandboxState || { files: {}, openFiles: [], activeFile: null, consoleOutput: [] };
+                        let lastPath: string | null = null;
+                        operations.forEach((op: {operation: string, path: string, content?: string}) => {
+                           switch(op.operation) {
+                               case 'create':
+                               case 'update':
+                                   const lang = op.path.split('.').pop() || 'text';
+                                   sandbox.files[op.path] = { code: op.content || '', language: lang };
+                                   if (!sandbox.openFiles.includes(op.path)) sandbox.openFiles.push(op.path);
+                                   lastPath = op.path;
+                                   break;
+                               case 'delete':
+                                   delete sandbox.files[op.path];
+                                   sandbox.openFiles = sandbox.openFiles.filter(p => p !== op.path);
+                                   if (sandbox.activeFile === op.path) sandbox.activeFile = null;
+                                   break;
+                           }
+                        });
+                        if (lastPath) sandbox.activeFile = lastPath;
+                        if (!sandbox.activeFile && sandbox.openFiles.length > 0) {
+                            sandbox.activeFile = sandbox.openFiles[0];
+                        }
+                        finalSandboxState = sandbox;
+
+                    } catch(e) { console.error("Failed to parse filesystem JSON", e); }
+                  } else {
+                    // Fallback to old single code block logic
+                    const codeMatch = newText.match(/```(jsx|html|python|python-api|javascript)\n([\s\S]*?)```/);
+                    if (codeMatch && !finalSandboxState) { // Only create if sandbox doesn't exist
+                       const language = codeMatch[1];
+                       const code = codeMatch[2];
+                       const filename = `main.${language === 'jsx' ? 'jsx' : language}`;
+                       finalSandboxState = {
+                         files: { [filename]: { code, language } },
+                         openFiles: [filename],
+                         activeFile: filename,
+                         consoleOutput: []
+                       };
+                    }
                   }
                   
+                  // This is for legacy file creation, should be phased out.
                   const fileCreationRegex = /\{"file":\s*\{"filename":\s*"([^"]+)",\s*"content":\s*"((?:[^"\\]|\\.)*)"\}\}/g;
-                  const createdFiles: {filename: string, content: string}[] = [];
                   let fileMatch;
-                  let newText = aiFinalMessage.text;
                   while ((fileMatch = fileCreationRegex.exec(aiFinalMessage.text)) !== null) {
                     newText = newText.replace(fileMatch[0], '').trim();
-                    try {
-                        createdFiles.push({
-                          filename: fileMatch[1],
-                          content: JSON.parse(`"${fileMatch[2]}"`)
-                        });
-                    } catch (e) { console.error("Failed to parse file content", e)}
                   }
-                  
-                  if (createdFiles.length > 0) {
-                    finalMessages[finalMessages.length - 1] = {
-                        ...aiFinalMessage,
-                        files: createdFiles,
-                        text: newText,
-                        status: AIStatus.Idle
-                    };
-                  }
+
+                  finalMessages[finalMessages.length - 1] = {
+                      ...aiFinalMessage,
+                      text: newText,
+                      status: AIStatus.Idle
+                  };
                 }
                 return { ...chat, messages: finalMessages, sandboxState: finalSandboxState };
             }
             return chat;
         }));
     }
-  }, [activeChatId, chats, handleStop]);
+  }, [activeChatId, chats, handleStop, activeChat]);
   
   const handleSendMessage = useCallback(async (text: string, files: File[], isSearchActive: boolean) => {
     const filePromises = files.map(file => {
@@ -322,8 +356,34 @@ const App: React.FC = () => {
     
     _sendMessage(text, processedFiles, isSearchActive, false);
   }, [_sendMessage]);
+  
+  const handleOpenInSandbox = useCallback((code: string, language: string) => {
+    if (!activeChatId) return;
 
-  const handleAutoFixRequest = useCallback((error: string, code: string, language: string) => {
+    setChats(prevChats => prevChats.map(chat => {
+      if (chat.id === activeChatId) {
+        const sandbox = chat.sandboxState || { files: {}, openFiles: [], activeFile: null, consoleOutput: [] };
+        
+        let filename = `component.${language}`;
+        let i = 1;
+        while (sandbox.files[filename]) {
+          filename = `component_${i++}.${language}`;
+        }
+
+        sandbox.files[filename] = { code, language };
+        if (!sandbox.openFiles.includes(filename)) {
+          sandbox.openFiles = [...sandbox.openFiles, filename];
+        }
+        sandbox.activeFile = filename;
+        
+        return { ...chat, sandboxState: sandbox };
+      }
+      return chat;
+    }));
+  }, [activeChatId]);
+
+
+  const handleAutoFixRequest = useCallback((error: string, code: string, language:string) => {
     const prompt = `The following error was detected in the console:
 
 ---
@@ -335,14 +395,17 @@ Here is the code that produced it:
 ${code}
 \`\`\`
 
-Please analyze the error and the code, explain the cause of the error, and provide a corrected version of the code in a new code block.`;
+Please analyze the error and the code, explain the cause of the error, and provide a corrected version of the code by updating the relevant file in the sandbox.`;
     
     _sendMessage(prompt, [], false, true);
   }, [_sendMessage]);
 
   const handleAutoFixAllErrorsRequest = useCallback(() => {
-    if (!activeChat?.sandboxState) return;
-    const { code, language, consoleOutput } = activeChat.sandboxState;
+    if (!activeChat?.sandboxState || !activeChat.sandboxState.activeFile) return;
+    const { files, consoleOutput, activeFile } = activeChat.sandboxState;
+    const activeSandboxFile = files[activeFile];
+    if (!activeSandboxFile) return;
+
     const errors = consoleOutput?.filter(line => line.type === 'error').map(line => line.message) || [];
     if (errors.length === 0) return;
 
@@ -351,11 +414,11 @@ Please analyze the error and the code, explain the cause of the error, and provi
 ---
 ${errorText}
 ---
-Here is the code that produced them:
-\`\`\`${language}
-${code}
+Here is the code from file "${activeFile}" that produced them:
+\`\`\`${activeSandboxFile.language}
+${activeSandboxFile.code}
 \`\`\`
-Please analyze all errors and the code, explain the causes, and provide a single corrected version of the code in a new code block that fixes all identified issues.`;
+Please analyze all errors and the code, explain the causes, and provide a single corrected version of the code by updating the "${activeFile}" file in the sandbox.`;
     
     _sendMessage(prompt, [], false, true);
   }, [activeChat, _sendMessage]);
@@ -407,42 +470,13 @@ Please analyze all errors and the code, explain the causes, and provide a single
     }
   };
   
-  const handlePreviewCode = useCallback((code: string, language: string) => {
-    setSandboxState({ code, language, consoleOutput: [] });
-  }, [setSandboxState]);
-
-  const handleCodeUpdate = useCallback((newCode: string) => {
-    setChats(prevChats => prevChats.map(chat => {
-        if (chat.id === activeChatId && chat.sandboxState) {
-            return {
-                ...chat,
-                sandboxState: { ...chat.sandboxState, code: newCode }
-            };
-        }
-        return chat;
-    }));
-  }, [activeChatId]);
-
-  const handleConsoleUpdate = useCallback((line: { type: string, message: string }) => {
+  const handleSandboxUpdate = useCallback((updater: (prevState: Chat['sandboxState']) => Chat['sandboxState']) => {
     if (activeChatId) {
-        setChats(prev => prev.map(chat => {
-            if (chat.id === activeChatId && chat.sandboxState) {
-                const newOutput = [...(chat.sandboxState.consoleOutput || []), line];
-                return { ...chat, sandboxState: { ...chat.sandboxState, consoleOutput: newOutput }};
-            }
-            return chat;
-        }));
-    }
-  }, [activeChatId]);
-
-  const handleClearConsole = useCallback(() => {
-    if (activeChatId) {
-        setChats(prev => prev.map(chat => {
-            if (chat.id === activeChatId && chat.sandboxState) {
-                return { ...chat, sandboxState: { ...chat.sandboxState, consoleOutput: [] }};
-            }
-            return chat;
-        }));
+      setChats(prev => prev.map(chat =>
+        chat.id === activeChatId && chat.sandboxState
+          ? { ...chat, sandboxState: updater(chat.sandboxState) as any }
+          : chat
+      ));
     }
   }, [activeChatId]);
 
@@ -463,10 +497,10 @@ Please analyze all errors and the code, explain the causes, and provide a single
         const chatId = menuTarget!.getAttribute('data-chat-id');
         if (chatId) {
           items.push(
-            { label: 'Rename', icon: <PencilIcon className="w-4 h-4"/>, action: () => setRenamingChatId(chatId) },
-            { label: 'Share', icon: <ShareIcon className="w-4 h-4" />, action: () => handleShareChat(chatId) },
+            { label: 'Rename', icon: <PencilIcon className="w-4 h-4"/>, action: () => setRenamingChatId(chatId), isSeparator: false },
+            { label: 'Share', icon: <ShareIcon className="w-4 h-4" />, action: () => handleShareChat(chatId), isSeparator: false },
             { isSeparator: true },
-            { label: 'Delete', icon: <TrashIcon className="w-4 h-4" />, action: () => handleDeleteChat(chatId) }
+            { label: 'Delete', icon: <TrashIcon className="w-4 h-4" />, action: () => handleDeleteChat(chatId), isSeparator: false }
           );
         }
         break;
@@ -475,19 +509,24 @@ Please analyze all errors and the code, explain the causes, and provide a single
         const msgId = menuTarget!.getAttribute('data-message-id');
         const msg = activeChat?.messages.find(m => m.id === msgId);
         if (msg) {
-          items.push({ label: 'Copy Text', icon: <CopyIcon className="w-4 h-4"/>, action: () => navigator.clipboard.writeText(msg.text) });
+          items.push({ label: 'Copy Text', icon: <CopyIcon className="w-4 h-4"/>, action: () => navigator.clipboard.writeText(msg.text), isSeparator: false });
         }
         break;
       }
-      case 'preview-panel': {
-        if (activeChat?.sandboxState) {
-            const panelElement = document.getElementById('preview-panel-refresh-button');
-            items.push(
-                { label: 'Refresh Preview', icon: <RefreshIcon className="w-4 h-4" />, action: () => panelElement?.click() },
-                { isSeparator: true },
-                { label: 'Close Panel', icon: <XMarkIcon className="w-4 h-4" />, action: () => setSandboxState(null) }
-            );
-        }
+      case 'sandbox-file': {
+        const path = menuTarget!.getAttribute('data-path')!;
+        items.push({
+            label: 'Delete File',
+            icon: <TrashIcon className="w-4 h-4" />,
+            action: () => handleSandboxUpdate(prev => {
+                const newFiles = { ...prev!.files };
+                delete newFiles[path];
+                const newOpenFiles = prev!.openFiles.filter(p => p !== path);
+                const newActiveFile = prev!.activeFile === path ? (newOpenFiles[0] || null) : prev!.activeFile;
+                return { ...prev!, files: newFiles, openFiles: newOpenFiles, activeFile: newActiveFile };
+            }),
+            isSeparator: false,
+        });
         break;
       }
       case 'preview-console': {
@@ -496,7 +535,8 @@ Please analyze all errors and the code, explain the causes, and provide a single
             items.push({
                 label: `Fix all ${consoleErrors.length} errors`,
                 icon: <BoltIcon className="w-4 h-4" />,
-                action: handleAutoFixAllErrorsRequest
+                action: handleAutoFixAllErrorsRequest,
+                isSeparator: false,
             });
         }
         if (activeChat?.sandboxState?.consoleOutput?.length) {
@@ -504,13 +544,14 @@ Please analyze all errors and the code, explain the causes, and provide a single
             items.push({
                 label: 'Clear Console',
                 icon: <TrashIcon className="w-4 h-4" />,
-                action: handleClearConsole
+                action: () => handleSandboxUpdate(p => ({ ...p!, consoleOutput: [] })),
+                isSeparator: false,
             });
         }
         break;
       }
       default: { // Background menu
-        items.push({ label: 'New Chat', icon: <PlusIcon className="w-4 h-4"/>, action: handleNewChat });
+        items.push({ label: 'New Chat', icon: <PlusIcon className="w-4 h-4"/>, action: handleNewChat, isSeparator: false });
       }
     }
     
@@ -518,7 +559,7 @@ Please analyze all errors and the code, explain the causes, and provide a single
       setContextMenu({ x: e.clientX, y: e.clientY, items });
     }
 
-  }, [activeChat, chats, handleCloseContextMenu, handleNewChat, handleDeleteChat, handleShareChat, handleAutoFixAllErrorsRequest, handleClearConsole]);
+  }, [activeChat, chats, handleCloseContextMenu, handleNewChat, handleDeleteChat, handleShareChat, handleAutoFixAllErrorsRequest, handleSandboxUpdate]);
   
   const messages = activeChat ? activeChat.messages : [];
 
@@ -537,7 +578,7 @@ Please analyze all errors and the code, explain the causes, and provide a single
         onRenameComplete={() => setRenamingChatId(null)}
       />
       <div className="flex flex-1 overflow-hidden relative">
-        <div data-context-menu-id="main-chat-area" className={`flex flex-col flex-1 h-screen transition-all duration-300 ease-in-out ${activeChat?.sandboxState ? 'w-full md:w-1/2' : 'w-full'}`}>
+        <div data-context-menu-id="main-chat-area" className={`flex flex-col flex-1 h-screen transition-all duration-300 ease-in-out ${activeChat?.sandboxState ? 'w-full md:w-2/5 lg:w-1/3' : 'w-full'}`}>
           <Header
             onShare={() => handleShareChat()}
             hasActiveChat={!!activeChat}
@@ -549,7 +590,7 @@ Please analyze all errors and the code, explain the causes, and provide a single
                 {messages.length === 0 ? (
                   <WelcomeScreen onPromptClick={(prompt) => handleSendMessage(prompt, [], false)} />
                 ) : (
-                  messages.map(msg => <ChatMessage key={msg.id} message={msg} onPreviewCode={handlePreviewCode} />)
+                  messages.map(msg => <ChatMessage key={msg.id} message={msg} onOpenInSandbox={handleOpenInSandbox} />)
                 )}
                </div>
             </div>
@@ -565,17 +606,13 @@ Please analyze all errors and the code, explain the causes, and provide a single
           </main>
         </div>
         {activeChat?.sandboxState && (
-          <div data-context-menu-id="preview-panel" className="w-full md:w-1/2 animate-slide-in-from-right">
-            <PreviewPanel
+          <div className="w-full absolute top-0 right-0 h-full md:relative md:w-3/5 lg:w-2/3 animate-slide-in-from-right">
+            <Sandbox
               key={activeChatId} // Re-mount panel when chat changes
-              code={activeChat.sandboxState.code}
-              language={activeChat.sandboxState.language}
-              consoleOutput={activeChat.sandboxState.consoleOutput || []}
+              sandboxState={activeChat.sandboxState}
               onClose={() => setSandboxState(null)}
-              onCodeUpdate={handleCodeUpdate}
+              onUpdate={handleSandboxUpdate}
               onAutoFixRequest={handleAutoFixRequest}
-              onConsoleUpdate={handleConsoleUpdate}
-              onClearConsole={handleClearConsole}
             />
           </div>
         )}

@@ -192,3 +192,28 @@ export const JavaScriptIcon: React.FC<{ className?: string }> = ({ className }) 
         <path d="M9.42 14.932c.36.608.847.973 1.764 1.25l.482.144c.432.12.636.216.636.414 0 .216-.252.324-.636.324-.522 0-.918-.216-1.224-.63l-1.14.72c.45.72 1.224 1.224 2.43 1.224 1.35 0 2.214-.666 2.214-1.602 0-.738-.342-1.242-1.53-1.62l-.468-.144c-.45-.144-.684-.252-.684-.45 0-.198.252-.306.594-.306.45 0 .756.198 1.026.54l1.098-.756c-.432-.666-1.116-1.044-2.124-1.044-.99 0-1.998.54-1.998 1.512 0 .63.36 1.098 1.242 1.386zm4.194-2.106h1.962l-1.008-3.996h-1.962l-1.026 3.996h1.962l.216-.81h.648l.216.81zm-.558-1.566l.27-.99c.054-.216.09-.396.126-.612h.018c.036.216.072.396.126.612l.27.99h-.81z" />
     </svg>
 );
+
+export const FolderIcon: React.FC<{ className?: string }> = ({ className }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={className}>
+        <path d="M3.5 3A1.5 1.5 0 002 4.5v1.756c0 .414.336.75.75.75h14.5a.75.75 0 00.75-.75V4.5A1.5 1.5 0 0016.5 3h-6.882a1.5 1.5 0 01-1.06-.44L7.44 1.44A1.5 1.5 0 006.382 1H4.5A1.5 1.5 0 003.5 3z" />
+        <path d="M2 9.5A1.5 1.5 0 003.5 11h13a1.5 1.5 0 001.5-1.5V7.256a.75.75 0 00-.75-.75H2.75a.75.75 0 00-.75.75v2.244z" />
+    </svg>
+);
+
+export const FileIcon: React.FC<{ className?: string }> = ({ className }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={className}>
+        <path fillRule="evenodd" d="M4 2a2 2 0 00-2 2v12a2 2 0 002 2h12a2 2 0 002-2V8.343a1 1 0 00-.293-.707l-3.43-3.43A1 1 0 0012.657 4H4zm4.5 1.5a.5.5 0 00-.5.5v2.5a.5.5 0 00.5.5h3a.5.5 0 00.5-.5V4a.5.5 0 00-.5-.5h-3z" clipRule="evenodd" />
+    </svg>
+);
+
+export const ChevronRightIcon: React.FC<{ className?: string }> = ({ className }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={className}>
+        <path fillRule="evenodd" d="M8.22 5.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 010-1.06z" clipRule="evenodd" />
+    </svg>
+);
+
+export const ChevronDownIcon: React.FC<{ className?: string }> = ({ className }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={className}>
+        <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 011.06 0L10 11.94l3.72-3.72a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.28a.75.75 0 010-1.06z" clipRule="evenodd" />
+    </svg>
+);
