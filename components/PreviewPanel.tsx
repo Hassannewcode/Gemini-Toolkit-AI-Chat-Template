@@ -11,6 +11,7 @@ type SandboxProps = {
 };
 
 type ActiveView = 'editor' | 'preview' | 'console';
+type ProjectType = 'python' | 'node' | 'web' | 'unknown';
 
 // --- File Explorer ---
 type TreeNode = { [key: string]: TreeNode | SandboxFile };
@@ -132,17 +133,12 @@ const ExecutionView: React.FC<{
     files: { [path: string]: SandboxFile }, 
     onConsoleUpdate: (line: { type: string, message: string }) => void,
     onExecute: (language: string) => void;
-}> = ({ files, onConsoleUpdate, onExecute }) => {
+    projectType: ProjectType,
+    consoleOutput?: { type: string; message: string }[];
+    onClearConsole: () => void;
+}> = ({ files, onConsoleUpdate, onExecute, projectType, consoleOutput, onClearConsole }) => {
     const [srcDoc, setSrcDoc] = useState('');
     const [refreshKey, setRefreshKey] = useState(0);
-
-    const projectType = useMemo(() => {
-        const fileNames = Object.keys(files);
-        if (fileNames.some(name => name.endsWith('.py'))) return 'python';
-        if (fileNames.some(name => name.endsWith('index.js') && fileNames.includes('package.json'))) return 'node';
-        if (fileNames.some(name => name.endsWith('.html') || name.endsWith('.jsx') || name.endsWith('.js'))) return 'web';
-        return 'unknown';
-    }, [files]);
     
     const consoleInterceptor = `
         const formatArg = (arg) => {
@@ -230,54 +226,79 @@ const ExecutionView: React.FC<{
         return () => window.removeEventListener('message', handleIframeMessages);
     }, [onConsoleUpdate]);
 
-    if (projectType === 'python' || projectType === 'node') {
-        return (
-            <div className="flex flex-col items-center justify-center h-full text-center text-text-secondary p-4 bg-background">
-                <div className="bg-surface p-8 rounded-xl border border-border shadow-lg max-w-sm animate-scale-in">
-                    {projectType === 'python' ? <PythonIcon className="w-16 h-16 mb-4 text-blue-400 mx-auto" /> : <JavaScriptIcon className="w-16 h-16 mb-4 mx-auto rounded-md" />}
-                    <h3 className="text-xl font-bold text-text-primary mb-2">
-                        {projectType === 'python' ? 'Python' : 'Node.js'} Project
-                    </h3>
-                    <p className="text-sm text-text-tertiary mb-6">
-                        This is a non-interactive view. Click the button to execute the code and see the output in the console.
-                    </p>
-                    <button 
-                        onClick={() => onExecute(projectType)} 
-                        className="w-full flex items-center justify-center gap-2.5 px-6 py-3 bg-accent text-background rounded-lg font-semibold hover:bg-opacity-90 transition-all duration-200 transform hover:scale-105"
-                    >
-                        <PlayIcon className="w-5 h-5" />
-                        Run Project
-                    </button>
-                </div>
-            </div>
-        );
-    }
 
-    if (projectType === 'web') {
-        return (
-            <div className="w-full h-full flex flex-col bg-background">
-                 <div className="flex items-center p-1.5 border-b border-border flex-shrink-0">
-                    <div className="flex-grow" />
-                    <button onClick={() => setRefreshKey(k => k + 1)} className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors"><RefreshIcon className="w-5 h-5" /></button>
+    switch (projectType) {
+        case 'python':
+        case 'node':
+            return (
+                <div className="w-full h-full flex flex-col bg-background">
+                    <div className="flex items-center justify-between p-1.5 border-b border-border flex-shrink-0">
+                        <button
+                            onClick={() => onExecute(projectType)}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 text-green-400 rounded-md font-medium text-sm hover:bg-green-500/20 transition-colors"
+                        >
+                            <PlayIcon className="w-4 h-4" />
+                            Run Project
+                        </button>
+                        <div className="flex items-center">
+                            {consoleOutput && consoleOutput.length > 0 && (
+                                <button
+                                    onClick={onClearConsole}
+                                    title="Clear Console"
+                                    className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors"
+                                >
+                                    <TrashIcon className="w-4 h-4" />
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                    <div className="flex-1 bg-black/20 p-4 font-mono text-sm text-text-secondary overflow-y-auto">
+                        {consoleOutput && consoleOutput.length > 0 ? (
+                            consoleOutput.map((line, index) => (
+                                <div key={index} className="flex items-start">
+                                    <span className="select-none text-text-tertiary mr-3">{'>'}</span>
+                                    <pre className={`whitespace-pre-wrap flex-1 ${line.type === 'error' ? 'text-red-400' : ''}`}>
+                                        {line.message}
+                                    </pre>
+                                </div>
+                            ))
+                        ) : (
+                            <div className="text-center text-text-tertiary pt-8 h-full flex flex-col items-center justify-center">
+                                <TerminalIcon className="w-12 h-12 text-text-tertiary/50 mb-4" />
+                                <p>Click "Run Project" to execute the code.</p>
+                                <p className="text-xs mt-1">Output will appear here.</p>
+                            </div>
+                        )}
+                    </div>
                 </div>
-                <div className="flex-1 bg-black/20 p-4">
-                    <iframe key={refreshKey} srcDoc={srcDoc} title="Preview" sandbox="allow-scripts allow-modals allow-same-origin" className="w-full h-full border-0 bg-white rounded-md shadow-lg" />
+            );
+        
+        case 'web':
+            return (
+                 <div className="w-full h-full flex flex-col bg-background">
+                     <div className="flex items-center p-1.5 border-b border-border flex-shrink-0">
+                        <div className="flex-grow" />
+                        <button onClick={() => setRefreshKey(k => k + 1)} className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors"><RefreshIcon className="w-5 h-5" /></button>
+                    </div>
+                    <div className="flex-1 bg-black/20 p-4">
+                        <iframe key={refreshKey} srcDoc={srcDoc} title="Preview" sandbox="allow-scripts allow-modals allow-same-origin" className="w-full h-full border-0 bg-white rounded-md shadow-lg" />
+                    </div>
                 </div>
-            </div>
-        );
+            );
+        
+        default: // 'unknown'
+            return (
+                <div className="flex flex-col items-center justify-center h-full text-center text-text-secondary p-4">
+                    <CodeBracketIcon className="w-16 h-16 mb-4 opacity-20"/>
+                    <h3 className="text-lg font-semibold text-text-primary mb-2">
+                        No Preview Available
+                    </h3>
+                    <p className="text-sm text-text-tertiary max-w-xs">
+                        Could not determine project type. Make sure you have an entry file like 'index.html', 'main.py', or 'index.js'.
+                    </p>
+                </div>
+            );
     }
-    
-    return (
-        <div className="flex flex-col items-center justify-center h-full text-center text-text-secondary p-4">
-            <CodeBracketIcon className="w-16 h-16 mb-4 opacity-20"/>
-            <h3 className="text-lg font-semibold text-text-primary mb-2">
-                No Preview Available
-            </h3>
-            <p className="text-sm text-text-tertiary max-w-xs">
-                Could not determine project type. Make sure you have an entry file like 'index.html', 'main.py', or 'index.js'.
-            </p>
-        </div>
-    );
 };
 
 // --- Main Sandbox ---
@@ -285,7 +306,25 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
     const { files, openFiles, activeFile, consoleOutput } = sandboxState;
     const [activeView, setActiveView] = useState<ActiveView>('editor');
 
-    const activeSandboxFile = activeFile ? files[activeFile] : null;
+    const projectType: ProjectType = useMemo(() => {
+        const fileNames = Object.keys(files || {});
+        if (fileNames.length === 0) return 'unknown';
+        if (fileNames.some(name => name.endsWith('.py'))) return 'python';
+        if (fileNames.some(name => name.endsWith('index.js') && fileNames.includes('package.json'))) return 'node';
+        if (fileNames.some(name => name.endsWith('.html') || name.endsWith('.jsx') || name.endsWith('.js'))) return 'web';
+        return 'unknown';
+    }, [files]);
+    
+    // Set a sensible default view when the sandbox loads or project type changes
+    useEffect(() => {
+        if (projectType === 'web') {
+            setActiveView('preview');
+        } else if (projectType === 'python' || projectType === 'node') {
+            setActiveView('editor'); // Default to editor, user can switch to terminal
+        } else {
+            setActiveView('editor');
+        }
+    }, [projectType]);
 
     const handleSelectFile = (path: string) => {
         onUpdate(prev => {
@@ -356,30 +395,38 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
                 </div>
 
                 <div className="flex-1 flex flex-col bg-background overflow-auto">
-                    {activeSandboxFile ? (
+                    {activeFile ? (
                         <>
                             <nav className="flex items-stretch px-2 border-b border-border bg-surface/50">
                                 <TabButton view="editor"><CodeBracketIcon className="w-4 h-4"/> Editor</TabButton>
-                                <TabButton view="preview" disabled={!isExecutable}><PlayIcon className="w-4 h-4"/> Execute</TabButton>
-                                <TabButton view="console"><TerminalIcon className="w-4 h-4"/> Console</TabButton>
+                                {projectType === 'web' && <TabButton view="preview" disabled={!isExecutable}><EyeIcon className="w-4 h-4"/> Preview</TabButton>}
+                                {(projectType === 'python' || projectType === 'node') && <TabButton view="preview" disabled={!isExecutable}><TerminalIcon className="w-4 h-4"/> Terminal</TabButton>}
+                                {projectType === 'web' && <TabButton view="console"><TerminalIcon className="w-4 h-4"/> Console</TabButton>}
                             </nav>
                             <main className="flex-1 bg-background overflow-auto">
                                 {activeView === 'editor' && (
-                                    <textarea value={activeSandboxFile.code} onChange={(e) => handleCodeChange(e.target.value)} className="w-full h-full bg-transparent text-text-primary p-4 resize-none font-mono text-sm leading-6 focus:outline-none" spellCheck="false"/>
+                                    <textarea value={files[activeFile]?.code || ''} onChange={(e) => handleCodeChange(e.target.value)} className="w-full h-full bg-transparent text-text-primary p-4 resize-none font-mono text-sm leading-6 focus:outline-none" spellCheck="false"/>
                                 )}
                                 {activeView === 'preview' && isExecutable && (
-                                    <ExecutionView files={files} onConsoleUpdate={handleConsoleUpdate} onExecute={onExecuteRequest} />
+                                    <ExecutionView 
+                                        files={files} 
+                                        onConsoleUpdate={handleConsoleUpdate} 
+                                        onExecute={onExecuteRequest}
+                                        projectType={projectType}
+                                        consoleOutput={consoleOutput}
+                                        onClearConsole={() => onUpdate(p => ({ ...p!, consoleOutput: [] }))}
+                                    />
                                 )}
-                                {activeView === 'console' && (
+                                {activeView === 'console' && projectType === 'web' && (
                                      <div data-context-menu-id="preview-console" className="w-full h-full p-4 font-mono text-xs text-text-secondary overflow-y-auto">
                                         {consoleOutput && consoleOutput.map((line, index) => (
                                             <div key={index} className="group flex items-start gap-2 justify-between hover:bg-surface/50 -mx-4 px-4 py-0.5 rounded-md">
                                               <pre className={`whitespace-pre-wrap flex-1 ${line.type === 'error' ? 'text-red-400' : line.type === 'info' ? 'text-blue-300' : ''}`}>
                                                   <span className="select-none text-text-tertiary mr-2">{'>'}</span>{line.message}
                                               </pre>
-                                              {line.type === 'error' && activeSandboxFile && (
+                                              {line.type === 'error' && activeFile && files[activeFile] && (
                                                   <button
-                                                      onClick={() => onAutoFixRequest(line.message, activeSandboxFile.code, activeSandboxFile.language)}
+                                                      onClick={() => onAutoFixRequest(line.message, files[activeFile]!.code, files[activeFile]!.language)}
                                                       className="flex items-center gap-1.5 text-xs text-yellow-400/70 border border-yellow-400/20 bg-yellow-400/10 rounded-md px-2 py-1 ml-4 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-yellow-400/20 hover:text-yellow-300"
                                                       title="Ask AI to fix this error"
                                                   >
