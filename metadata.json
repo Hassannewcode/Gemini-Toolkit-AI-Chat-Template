@@ -1,0 +1,5 @@
+{
+  "name": "Gemini Toolkit Chat",
+  "description": "An advanced AI chat template with a comprehensive toolkit, including file handling, web search simulation, a preview sandbox, and real-time status updates, designed with a professional and modern user interface.",
+  "requestFramePermissions": []
+}
