@@ -7,4 +7,4 @@
 # Made With Google AI Studio App
 
 * Check out https://ai-chatbot-template-gemini-toolkit.vercel.app/
-- For a full look at the tempalte!
+ For a full look at the template!
