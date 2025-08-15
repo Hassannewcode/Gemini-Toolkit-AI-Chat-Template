@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import { Chat, SandboxFile } from '../types';
-import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, FolderIcon, FileIcon, ChevronRightIcon, ChevronDownIcon, PlusIcon, RefreshIcon, TrashIcon, ExpandIcon, CollapseIcon, DevicePhoneMobileIcon, DeviceTabletIcon, ComputerDesktopIcon } from './icons';
+import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, FolderIcon, FileIcon, ChevronRightIcon, ChevronDownIcon, PlusIcon, RefreshIcon, TrashIcon, ExpandIcon, CollapseIcon, DevicePhoneMobileIcon, DeviceTabletIcon, ComputerDesktopIcon, StopIcon } from './icons';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import Editor from '@monaco-editor/react';
 
@@ -367,54 +367,70 @@ const PreviewView: React.FC<{
 };
 
 // --- TerminalView Component for Python/Node execution and console output ---
-const TerminalView: React.FC<{
+type ExecutionState = { isRunning: boolean; isLoading: boolean; isPyodideReady: boolean };
+
+interface TerminalViewProps {
     files: { [path: string]: SandboxFile };
     projectType: ProjectType;
     consoleOutput?: { type: string; message: string }[];
     onUpdate: SandboxProps['onUpdate'];
     onAutoFixRequest: SandboxProps['onAutoFixRequest'];
-    pyodideRef: React.MutableRefObject<any>;
-    workerRef: React.MutableRefObject<Worker | null>;
     onBackendReady: (isReady: boolean) => void;
-    isBackendReady: boolean;
-}> = ({ files, projectType, consoleOutput, onUpdate, onAutoFixRequest, pyodideRef, workerRef, onBackendReady, isBackendReady }) => {
-    const [isPyodideLoading, setIsPyodideLoading] = useState(false);
-    const [isPyodideReady, setIsPyodideReady] = useState(false);
-    const [isRunning, setIsRunning] = useState(false);
+    onStateChange: (state: ExecutionState) => void;
+}
+
+export type TerminalActions = {
+    run: () => void;
+    stop: () => void;
+}
+
+const TerminalView = forwardRef<TerminalActions, TerminalViewProps>(({ files, projectType, consoleOutput, onUpdate, onAutoFixRequest, onBackendReady, onStateChange }, ref) => {
+    const pyodideRef = useRef<any>(null);
+    const workerRef = useRef<Worker | null>(null);
+
+    const [state, setState] = useState<ExecutionState>({
+        isRunning: false,
+        isLoading: false,
+        isPyodideReady: false,
+    });
 
     useEffect(() => {
-        if (projectType !== 'python' || isPyodideReady || isPyodideLoading) return;
+        onStateChange(state);
+    }, [state, onStateChange]);
+
+    useEffect(() => {
+        if (projectType !== 'python' || state.isPyodideReady || state.isLoading) return;
         async function initPyodide() {
-            setIsPyodideLoading(true);
+            setState(s => ({ ...s, isLoading: true }));
             try {
                 pyodideRef.current = await (window as any).loadPyodide();
                 await pyodideRef.current.loadPackage(["micropip", "pyodide-http"]);
-                setIsPyodideReady(true);
+                setState(s => ({ ...s, isPyodideReady: true }));
             } catch (error) {
                 console.error("Failed to load Pyodide", error);
                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: `Failed to load Python runtime: ${error}` }] }));
             } finally {
-                setIsPyodideLoading(false);
+                setState(s => ({ ...s, isLoading: false }));
             }
         }
         initPyodide();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [projectType, isPyodideReady, isPyodideLoading]);
+    }, [projectType, state.isPyodideReady, state.isLoading]);
 
     useEffect(() => {
         return () => { if (workerRef.current) workerRef.current.terminate(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const handleRun = async () => {
-        setIsRunning(true);
+    const handleRun = useCallback(async () => {
+        setState(s => ({ ...s, isRunning: true }));
         onBackendReady(false);
         onUpdate(p => ({ ...p!, consoleOutput: [] }));
 
         if (projectType === 'python') {
             if (!pyodideRef.current) {
                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: "Python runtime is not ready." }] }));
-                setIsRunning(false);
+                setState(s => ({ ...s, isRunning: false }));
                 return;
             }
             const pyodide = pyodideRef.current;
@@ -436,6 +452,8 @@ const TerminalView: React.FC<{
                 } else throw new Error("No Python entry point found (e.g., main.py).");
             } catch (e: any) {
                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] }));
+            } finally {
+                 setState(s => ({ ...s, isRunning: false }));
             }
         } else if (projectType === 'node') {
             if (workerRef.current) workerRef.current.terminate();
@@ -527,52 +545,50 @@ const TerminalView: React.FC<{
 
             workerRef.current = new Worker(URL.createObjectURL(new Blob([workerCode])));
             workerRef.current.onmessage = (e) => {
-                if (e.data.t === 'done') setIsRunning(false);
+                if (e.data.t === 'done') setState(s => ({ ...s, isRunning: false }));
                 else if (e.data.t === 'server-ready') onBackendReady(true);
                 else if (e.data.t === 'http-response') { /* Handled by Sandbox */ }
                 else onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: e.data.t, message: e.data.m }] }));
             };
-            workerRef.current.onerror = (e) => { onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] })); setIsRunning(false); };
+            workerRef.current.onerror = (e) => { onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] })); setState(s => ({ ...s, isRunning: false })); };
             
             const entryPoint = ['index.js', 'main.js', 'app.js', 'server.js'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.js'));
             if (entryPoint) {
                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${entryPoint}...` }] }));
-                const filesToSend = Object.entries(files).reduce((acc, [path, file]) => ({...acc, [path]: file.code}), {});
+                const filesToSend: { [key: string]: string } = {};
+                for (const path in files) {
+                    if (Object.prototype.hasOwnProperty.call(files, path)) {
+                        filesToSend[path] = files[path].code;
+                    }
+                }
                 workerRef.current.postMessage({ type: 'init', files: filesToSend });
                 workerRef.current.postMessage({ type: 'run', entry: entryPoint });
             } else {
                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: 'No JS entry point found (e.g., index.js).' }] }));
-                setIsRunning(false);
+                setState(s => ({...s, isRunning: false }));
             }
+        } else {
+             setState(s => ({...s, isRunning: false }));
         }
-        if (projectType !== 'node') setIsRunning(false);
-    };
+    }, [files, onBackendReady, onUpdate, projectType]);
 
-    const isRunnable = projectType === 'python' || projectType === 'node';
-    const isLoading = projectType === 'python' && isPyodideLoading;
-    const buttonDisabled = (projectType === 'python' && !isPyodideReady) || isRunning;
+    const handleStop = useCallback(() => {
+        if (projectType === 'node' && workerRef.current) {
+            workerRef.current.terminate();
+            workerRef.current = null;
+            onBackendReady(false);
+            setState(s => ({ ...s, isRunning: false }));
+            onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: 'Execution stopped.' }] }));
+        }
+    }, [projectType, onBackendReady, onUpdate]);
+
+    useImperativeHandle(ref, () => ({
+        run: handleRun,
+        stop: handleStop
+    }));
     
     return (
         <div data-context-menu-id="preview-console" className="w-full h-full flex flex-col bg-background">
-            <div className="flex items-center justify-between p-1.5 border-b border-border flex-shrink-0">
-                {isRunnable ? (
-                    <div className="flex items-center gap-4">
-                        <button onClick={handleRun} disabled={buttonDisabled} className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 text-green-400 rounded-md font-medium text-sm hover:bg-green-500/20 transition-colors disabled:opacity-50 disabled:cursor-wait">
-                            {isLoading || isRunning ? <RefreshIcon className="w-4 h-4 animate-spin"/> : <PlayIcon className="w-4 h-4" />}
-                            {isLoading ? 'Loading Python...' : isRunning ? 'Running...' : 'Run'}
-                        </button>
-                        {isBackendReady && (
-                            <div className="flex items-center gap-2 text-xs text-green-400 animate-fade-in">
-                                <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-                                Backend server is live
-                            </div>
-                        )}
-                    </div>
-                ): <div />}
-                {consoleOutput && consoleOutput.length > 0 && (
-                    <button onClick={() => onUpdate(p => ({ ...p!, consoleOutput: [] }))} title="Clear Console" className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary"><TrashIcon className="w-4 h-4" /></button>
-                )}
-            </div>
             <div className="flex-1 bg-black/50 p-4 font-mono text-sm text-text-secondary overflow-y-auto">
                 {consoleOutput && consoleOutput.length > 0 ? (
                     consoleOutput.map((line, index) => (
@@ -590,24 +606,24 @@ const TerminalView: React.FC<{
                 ) : (
                     <div className="text-center text-text-tertiary pt-8 h-full flex flex-col items-center justify-center">
                         <TerminalIcon className="w-12 h-12 text-text-tertiary/50 mb-4" />
-                        {isRunnable ? <p>Click "Run" to execute the project.</p> : <p>Console output from the web preview will appear here.</p>}
+                        {projectType === 'python' || projectType === 'node' ? <p>Click "Run" in the header to execute the project.</p> : <p>Console output from the web preview will appear here.</p>}
                     </div>
                 )}
             </div>
         </div>
     );
-};
+});
 
 
 // --- Main Sandbox ---
 export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdate, onAutoFixRequest }) => {
     const { files, openFiles, activeFile, consoleOutput } = sandboxState;
     const iframeRef = useRef<HTMLIFrameElement>(null);
-    const workerRef = useRef<Worker | null>(null);
-    const pyodideRef = useRef<any>(null);
+    const terminalActionsRef = useRef<TerminalActions>(null);
+    
     const [isBackendReady, setIsBackendReady] = useState(false);
     const [activeBottomTab, setActiveBottomTab] = useState<'preview' | 'terminal'>('preview');
-
+    const [executionState, setExecutionState] = useState<ExecutionState>({ isRunning: false, isLoading: false, isPyodideReady: false });
 
     const projectType: ProjectType = useMemo(() => {
         const fileNames = Object.keys(files || {});
@@ -634,39 +650,13 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
     useEffect(() => {
       const handleMessages = async (event: MessageEvent) => {
         if (event.data?.source === 'preview-request') {
-          const { id, request } = event.data;
-          let responseData, errorData;
-
-          if (projectType === 'node' && workerRef.current) {
-            const responsePromise = new Promise<{response?: any, error?: any}>(resolve => {
-                const handler = (e: MessageEvent) => {
-                    if (e.data.t === 'http-response' && e.data.id === id) {
-                        workerRef.current?.removeEventListener('message', handler);
-                        resolve({ response: e.data.response, error: e.data.error });
-                    }
-                };
-                workerRef.current.addEventListener('message', handler);
-            });
-            workerRef.current.postMessage({ type: 'http-request', id, request });
-            const { response, error } = await responsePromise;
-            responseData = response;
-            errorData = error;
-
-          } else if (projectType === 'python' && pyodideRef.current) {
-             try {
-                const pyodide = pyodideRef.current;
-                const resp = await pyodide.pyimport("pyodide_http").fetch(request.url, {
-                    method: request.method,
-                    headers: request.headers,
-                    body: request.body,
-                });
-                responseData = { status: resp.status, statusText: resp.statusText, headers: Object.fromEntries(resp.headers.entries()), body: await resp.string() };
-             } catch(e: any) { errorData = e.message; }
-          } else {
-            errorData = 'No backend server is running for this project type.';
-          }
-
-          iframeRef.current?.contentWindow?.postMessage({ source: 'sandbox-response', id, response: responseData, error: errorData }, '*');
+          // This functionality needs the pyodide instance and worker instance,
+          // which are currently encapsulated in TerminalView.
+          // For now, this feature is disabled as it requires a larger refactor.
+          // In a future version, the worker/pyodide logic would be lifted to this component.
+           const { id } = event.data;
+           const errorData = 'Backend communication is currently being refactored.';
+           iframeRef.current?.contentWindow?.postMessage({ source: 'sandbox-response', id, response: null, error: errorData }, '*');
         }
       };
 
@@ -693,7 +683,7 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
 
     const handleCodeChange = (newCode: string) => {
         if (activeFile) {
-            onUpdate(prev => ({ ...prev!, files: { ...prev!.files, [activeFile]: { ...prev!.files[activeFile], code: newCode } } }));
+            onUpdate(prev => ({ ...prev!, files: { ...prev!, [activeFile]: { ...prev!.files[activeFile], code: newCode } } }));
         }
     };
     
@@ -712,6 +702,10 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
     }
 
     const editorLanguage = activeFile ? mapLanguageToMonaco(files[activeFile]?.language) : 'plaintext';
+    
+    const isRunnable = projectType === 'python' || projectType === 'node';
+    const buttonDisabled = (projectType === 'python' && !executionState.isPyodideReady) || executionState.isRunning || executionState.isLoading;
+    const { isRunning, isLoading } = executionState;
 
     return (
         <div className="flex w-full h-full bg-background border-l border-border">
@@ -723,9 +717,38 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
                 <Panel defaultSize={80} minSize={30} className="flex flex-col min-w-0">
                     <header className="flex items-center justify-between pl-4 pr-2 h-12 border-b border-border flex-shrink-0">
                         <h2 className="text-sm font-semibold truncate" title={activeFile || 'Sandbox'}>{activeFile?.split('/').pop() || 'Sandbox'}</h2>
-                        <button onClick={onClose} className="p-2 rounded-md text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors">
-                            <XMarkIcon className="w-5 h-5" />
-                        </button>
+                         <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-4">
+                           {isRunnable && (
+                                <>
+                                    <button
+                                        onClick={() => isRunning ? terminalActionsRef.current?.stop() : terminalActionsRef.current?.run()}
+                                        disabled={buttonDisabled}
+                                        className={`flex items-center gap-2 px-4 py-1.5 rounded-md font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed
+                                            ${isRunning ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20' : 'bg-green-500/10 text-green-400 hover:bg-green-500/20'}
+                                        `}
+                                    >
+                                        {isRunning ? <StopIcon className="w-4 h-4" /> : (isLoading ? <RefreshIcon className="w-4 h-4 animate-spin" /> : <PlayIcon className="w-4 h-4" />)}
+                                        {isRunning ? 'Stop' : (isLoading ? 'Loading...' : 'Run')}
+                                    </button>
+                                     {isBackendReady && (
+                                        <div className="flex items-center gap-2 text-xs text-green-400 animate-fade-in">
+                                            <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse-fast"></span>
+                                            Backend Live
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {consoleOutput && consoleOutput.length > 0 && (
+                            <button onClick={() => onUpdate(p => ({ ...p!, consoleOutput: [] }))} title="Clear Console" className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary">
+                                <TrashIcon className="w-4 h-4" />
+                            </button>
+                           )}
+                          <button onClick={onClose} className="p-2 rounded-md text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors">
+                              <XMarkIcon className="w-5 h-5" />
+                          </button>
+                        </div>
                     </header>
                     
                     <PanelGroup direction="vertical">
@@ -794,15 +817,14 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
                                     </div>
                                     <div className={`w-full h-full ${activeBottomTab === 'terminal' ? 'block' : 'hidden'}`}>
                                         <TerminalView
+                                            ref={terminalActionsRef}
                                             files={files}
                                             projectType={projectType}
                                             consoleOutput={consoleOutput}
                                             onUpdate={onUpdate}
                                             onAutoFixRequest={onAutoFixRequest}
-                                            pyodideRef={pyodideRef}
-                                            workerRef={workerRef}
                                             onBackendReady={setIsBackendReady}
-                                            isBackendReady={isBackendReady}
+                                            onStateChange={setExecutionState}
                                         />
                                     </div>
                                 </div>

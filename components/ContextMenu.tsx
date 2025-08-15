@@ -52,7 +52,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }
     >
       <ul className="space-y-1">
         {items.map((item, index) => {
-          if (item.isSeparator) {
+          if (!('action' in item)) {
             return (
               <li key={`sep-${index}`}>
                 <div className="h-px bg-border my-1" />
