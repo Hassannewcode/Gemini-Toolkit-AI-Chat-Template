@@ -317,7 +317,15 @@ const App: React.FC = () => {
                     if (codeMatch && !finalSandboxState) { // Only create if sandbox doesn't exist
                        const language = codeMatch[1];
                        const code = codeMatch[2];
-                       const filename = `main.${language === 'jsx' ? 'jsx' : language}`;
+                       const extensionMap: { [key: string]: string } = {
+                         'jsx': 'jsx',
+                         'html': 'html',
+                         'python': 'py',
+                         'python-api': 'py',
+                         'javascript': 'js'
+                       };
+                       const extension = extensionMap[language] || language;
+                       const filename = `main.${extension}`;
                        finalSandboxState = {
                          files: { [filename]: { code, language } },
                          openFiles: [filename],
