@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Chat, SandboxFile } from '../types';
-import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, FolderIcon, FileIcon, ChevronRightIcon, ChevronDownIcon, PlusIcon, RefreshIcon, TrashIcon } from './icons';
+import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, FolderIcon, FileIcon, ChevronRightIcon, ChevronDownIcon, PlusIcon, RefreshIcon, TrashIcon, ExpandIcon, CollapseIcon } from './icons';
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import Editor from '@monaco-editor/react';
 
 type SandboxProps = {
   sandboxState: NonNullable<Chat['sandboxState']>;
@@ -47,8 +49,11 @@ const FileExplorer: React.FC<{
         if (activeFile) {
             const pathParts = activeFile.split('/');
             if (pathParts.length > 1) {
-                const folderPath = pathParts.slice(0, -1).join('/');
-                setOpenFolders(prev => new Set(prev).add(folderPath));
+                let cumulativePath = '';
+                for (let i = 0; i < pathParts.length - 1; i++) {
+                    cumulativePath = cumulativePath ? `${cumulativePath}/${pathParts[i]}` : pathParts[i];
+                    setOpenFolders(prev => new Set(prev).add(cumulativePath));
+                }
             }
         }
     }, [activeFile]);
@@ -67,7 +72,7 @@ const FileExplorer: React.FC<{
     
     const handleNewFile = () => {
         const name = prompt("Enter new file name (e.g., 'src/new.js'):");
-        if (!name) return;
+        if (!name || !name.trim()) return;
         onUpdate(prev => ({
             ...prev!,
             files: { ...prev!.files, [name]: { code: '', language: name.split('.').pop() || 'text' } },
@@ -80,19 +85,17 @@ const FileExplorer: React.FC<{
         return Object.entries(node).map(([name, content]) => {
             const currentPath = path ? `${path}/${name}` : name;
             const isFolder = !('code' in content);
-            const indent = path.split('/').filter(p => p).length;
 
             if (isFolder) {
                 const isOpen = openFolders.has(currentPath);
                 return (
                     <div key={currentPath}>
-                        <button onClick={() => toggleFolder(currentPath)} className="w-full flex items-center gap-2 text-left px-2 py-1.5 text-sm text-text-secondary hover:bg-surface/50 rounded-md">
-                            <span style={{ paddingLeft: `${indent * 1}rem` }}/>
-                            {isOpen ? <ChevronDownIcon className="w-4 h-4" /> : <ChevronRightIcon className="w-4 h-4" />}
+                        <button onClick={() => toggleFolder(currentPath)} className="w-full flex items-center gap-1 text-left px-2 py-1.5 text-sm text-text-secondary hover:bg-surface/50 rounded-md">
+                            {isOpen ? <ChevronDownIcon className="w-4 h-4 flex-shrink-0" /> : <ChevronRightIcon className="w-4 h-4 flex-shrink-0" />}
                             <FolderIcon className="w-5 h-5 text-text-tertiary" />
-                            <span>{name}</span>
+                            <span className="truncate">{name}</span>
                         </button>
-                        {isOpen && <div className="pl-2">{renderTree(content, currentPath)}</div>}
+                        {isOpen && <div>{renderTree(content, currentPath)}</div>}
                     </div>
                 );
             } else {
@@ -102,10 +105,10 @@ const FileExplorer: React.FC<{
                         onClick={() => onSelectFile(currentPath)} 
                         data-context-menu-id="sandbox-file"
                         data-path={currentPath}
-                        className={`w-full flex items-center gap-2 text-left px-2 py-1.5 text-sm rounded-md transition-colors ${activeFile === currentPath ? 'bg-accent-hover text-text-primary' : 'text-text-secondary hover:bg-surface/50 hover:text-text-primary'}`}
+                        className={`w-full flex items-center gap-2 text-left pr-2 py-1.5 text-sm rounded-md transition-colors ${activeFile === currentPath ? 'bg-accent-hover text-text-primary' : 'text-text-secondary hover:bg-surface/50 hover:text-text-primary'}`}
                     >
-                        <span style={{ paddingLeft: `${indent * 1}rem` }}/>
-                        <FileIcon className="w-5 h-5 text-gray-400/80 ml-4" />
+                        <span className="w-4 h-4 flex-shrink-0" />
+                        <FileIcon className="w-5 h-5 text-gray-400/80" />
                         <span className="truncate">{name}</span>
                     </button>
                 );
@@ -114,8 +117,8 @@ const FileExplorer: React.FC<{
     };
 
     return (
-        <div className="w-56 bg-surface flex flex-col h-full border-r border-border">
-            <div className="p-2 border-b border-border flex items-center justify-between">
+        <div className="w-full bg-surface flex flex-col h-full">
+            <div className="p-2 border-b border-border flex items-center justify-between flex-shrink-0 h-12">
                 <h2 className="text-sm font-semibold px-2">Explorer</h2>
                 <button onClick={handleNewFile} title="New File" className="p-1.5 rounded-md hover:bg-accent-hover"><PlusIcon className="w-4 h-4"/></button>
             </div>
@@ -128,6 +131,10 @@ const FileExplorer: React.FC<{
 
 const resolvePath = (base: string, relative: string): string => {
     const stack = base.split('/').filter(i => i);
+    // if relative path starts with '/', it's from the root.
+    if (relative.startsWith('/')) {
+        stack.length = 0;
+    }
     relative.split('/').forEach(part => {
         if (part === '.' || part === '') return;
         if (part === '..') {
@@ -164,6 +171,7 @@ const PreviewView: React.FC<{
 }> = ({ files, onUpdate }) => {
     const [srcDoc, setSrcDoc] = useState('');
     const [refreshKey, setRefreshKey] = useState(0);
+    const [isFullScreen, setIsFullScreen] = useState(false);
 
     const buildSrcDoc = useCallback((processedHtml: string) => {
         const headTag = /<head[^>]*>/i.exec(processedHtml);
@@ -197,7 +205,7 @@ const PreviewView: React.FC<{
         const handler = setTimeout(() => {
             const indexHtmlFile = Object.entries(files).find(([path]) => path === 'index.html' || path.endsWith('.html'));
             if (!indexHtmlFile) {
-                setSrcDoc('<html><body><div style="font-family: sans-serif; padding: 2rem;"><h1>No HTML file found</h1><p>Create an index.html file to see a preview.</p></div></body></html>');
+                setSrcDoc('<html><body><div style="font-family: sans-serif; padding: 2rem; color: #94a3b8;"><h1>No HTML file found</h1><p>Create an index.html file to see a preview.</p></div></body></html>');
                 return;
             }
 
@@ -236,14 +244,17 @@ const PreviewView: React.FC<{
     }, [onUpdate]);
 
     return (
-        <div className="w-full h-full flex flex-col bg-background">
+        <div className={`w-full h-full flex flex-col bg-background ${isFullScreen ? 'fixed inset-0 z-50' : ''}`}>
             <div className="flex items-center p-1.5 border-b border-border flex-shrink-0">
                 <div className="flex-grow" />
                 <button onClick={() => setRefreshKey(k => k + 1)} title="Refresh Preview" className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors">
                     <RefreshIcon className="w-5 h-5" />
                 </button>
+                 <button onClick={() => setIsFullScreen(p => !p)} title={isFullScreen ? "Exit Fullscreen" : "Enter Fullscreen"} className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors">
+                    {isFullScreen ? <CollapseIcon className="w-5 h-5" /> : <ExpandIcon className="w-5 h-5" />}
+                </button>
             </div>
-            <div className="flex-1 bg-black/20 p-4">
+            <div className="flex-1 bg-black/50 p-4">
                 <iframe key={refreshKey} srcDoc={srcDoc} title="Preview" sandbox="allow-scripts allow-modals allow-same-origin" className="w-full h-full border-0 bg-white rounded-md shadow-lg" />
             </div>
         </div>
@@ -439,18 +450,23 @@ const TerminalView: React.FC<{
     
     return (
         <div data-context-menu-id="preview-console" className="w-full h-full flex flex-col bg-background">
-            {isRunnable && (
-                <div className="flex items-center justify-between p-1.5 border-b border-border flex-shrink-0">
+            <nav className="flex items-stretch px-2 border-b border-border bg-surface/50 h-10">
+                <div className="flex items-center gap-2 px-2 py-2 text-sm font-medium text-text-primary">
+                    <TerminalIcon className="w-4 h-4"/> Terminal
+                </div>
+            </nav>
+            <div className="flex items-center justify-between p-1.5 border-b border-border flex-shrink-0">
+                {isRunnable ? (
                     <button onClick={handleRun} disabled={buttonDisabled} className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 text-green-400 rounded-md font-medium text-sm hover:bg-green-500/20 transition-colors disabled:opacity-50 disabled:cursor-wait">
                         {isLoading || isRunning ? <RefreshIcon className="w-4 h-4 animate-spin"/> : <PlayIcon className="w-4 h-4" />}
-                        {isLoading ? 'Loading Python...' : isRunning ? 'Running...' : 'Run Code'}
+                        {isLoading ? 'Loading Python...' : isRunning ? 'Running...' : 'Run'}
                     </button>
-                    {consoleOutput && consoleOutput.length > 0 && (
-                        <button onClick={() => onUpdate(p => ({ ...p!, consoleOutput: [] }))} title="Clear Console" className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary"><TrashIcon className="w-4 h-4" /></button>
-                    )}
-                </div>
-            )}
-            <div className="flex-1 bg-black/20 p-4 font-mono text-sm text-text-secondary overflow-y-auto">
+                ): <div />}
+                {consoleOutput && consoleOutput.length > 0 && (
+                    <button onClick={() => onUpdate(p => ({ ...p!, consoleOutput: [] }))} title="Clear Console" className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary"><TrashIcon className="w-4 h-4" /></button>
+                )}
+            </div>
+            <div className="flex-1 bg-black/50 p-4 font-mono text-sm text-text-secondary overflow-y-auto">
                 {consoleOutput && consoleOutput.length > 0 ? (
                     consoleOutput.map((line, index) => (
                         <div key={index} className="group flex items-start gap-2 justify-between hover:bg-surface/50 -mx-4 px-4 py-0.5 rounded-md">
@@ -467,7 +483,7 @@ const TerminalView: React.FC<{
                 ) : (
                     <div className="text-center text-text-tertiary pt-8 h-full flex flex-col items-center justify-center">
                         <TerminalIcon className="w-12 h-12 text-text-tertiary/50 mb-4" />
-                        {isRunnable ? <p>Click "Run Code" to execute the project.</p> : <p>Console output from the web preview will appear here.</p>}
+                        {isRunnable ? <p>Click "Run" to execute the project.</p> : <p>Console output from the web preview will appear here.</p>}
                     </div>
                 )}
             </div>
@@ -487,7 +503,7 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
 
         if (fileNames.some(name => name.endsWith('.html'))) return 'web';
         if (fileNames.some(name => name.endsWith('.py'))) return 'python';
-        if (fileNames.some(name => ['index.js', 'main.js', 'app.js'].includes(name))) return 'node';
+        if (fileNames.some(name => ['index.js', 'main.js', 'app.js'].includes(name) || name === 'package.json')) return 'node';
         if (fileNames.some(name => name.endsWith('.jsx') || name.endsWith('.js'))) return 'web';
         
         return 'unknown';
@@ -498,7 +514,6 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
 
     useEffect(() => {
         if (activeView === 'preview' && !isWebViewable) setActiveView('editor');
-        if (activeView === 'terminal' && !isWebViewable && !isRunnable) setActiveView('editor');
     }, [projectType, activeView, isWebViewable, isRunnable]);
     
     useEffect(() => {
@@ -506,7 +521,7 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
             setActiveView('preview');
         } else if (isRunnable && activeView !== 'editor') {
             setActiveView('terminal');
-        } else {
+        } else if (projectType !== 'web' && activeView === 'preview') {
             setActiveView('editor');
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -525,7 +540,7 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
             let newActiveFile = prev!.activeFile;
             if (prev!.activeFile === path) {
                 const closingIdx = prev!.openFiles.indexOf(path);
-                newActiveFile = newOpenFiles[closingIdx] || newOpenFiles[closingIdx - 1] || null;
+                newActiveFile = newOpenFiles[closingIdx] || newOpenFiles[closingIdx - 1] || newOpenFiles[0] || null;
             }
             return { ...prev!, openFiles: newOpenFiles, activeFile: newActiveFile };
         });
@@ -536,68 +551,96 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
             onUpdate(prev => ({ ...prev!, files: { ...prev!.files, [activeFile]: { ...prev!.files[activeFile], code: newCode } } }));
         }
     };
+    
+    const mapLanguageToMonaco = (lang: string) => {
+        const l = lang?.toLowerCase() || 'plaintext';
+        switch(l) {
+            case 'jsx': return 'javascript';
+            case 'js': return 'javascript';
+            case 'ts': return 'typescript';
+            case 'tsx': return 'typescript';
+            case 'python': return 'python';
+            case 'py': return 'python';
+            case 'python-api': return 'python';
+            case 'html': return 'html';
+            case 'css': return 'css';
+            case 'json': return 'json';
+            default: return l;
+        }
+    }
 
-    const TabButton: React.FC<{ view: ActiveView, children: React.ReactNode, disabled?: boolean }> = ({ view, children, disabled }) => (
-        <button onClick={() => setActiveView(view)} disabled={disabled} data-active={activeView === view} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors duration-200 disabled:opacity-40 disabled:cursor-not-allowed border-b-2 data-[active=true]:border-accent data-[active=true]:text-text-primary border-transparent text-text-secondary hover:text-text-primary`}>
-          {children}
-        </button>
-    );
+    const editorLanguage = activeFile ? mapLanguageToMonaco(files[activeFile]?.language) : 'plaintext';
+
+    const BottomView = () => {
+        if (isWebViewable) return <PreviewView files={files} onUpdate={onUpdate}/>;
+        if (isRunnable) return <TerminalView files={files} projectType={projectType} consoleOutput={consoleOutput} onUpdate={onUpdate} onAutoFixRequest={onAutoFixRequest} />;
+        return (
+            <div className="flex flex-col items-center justify-center h-full text-center text-text-secondary">
+               <CodeBracketIcon className="w-16 h-16 mb-4 opacity-20"/>
+               <p>No preview available</p>
+               <p className="text-sm text-text-tertiary">This project type does not have a visual preview.</p>
+            </div>
+        );
+    };
 
     return (
         <div className="flex w-full h-full bg-background border-l border-border">
-            <FileExplorer files={files} activeFile={activeFile} onSelectFile={handleSelectFile} onUpdate={onUpdate} />
-            <div className="flex-1 flex flex-col min-w-0">
-                <header className="flex items-center justify-between pl-4 pr-2 h-12 border-b border-border flex-shrink-0">
-                    <h2 className="text-sm font-semibold">{activeFile || 'Sandbox'}</h2>
-                    <button onClick={onClose} className="p-2 rounded-md text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors">
-                        <XMarkIcon className="w-5 h-5" />
-                    </button>
-                </header>
-                
-                <div className="flex items-end border-b border-border bg-surface/30 h-10 overflow-x-auto flex-shrink-0">
-                    {openFiles.map(path => (
-                        <button key={path} onClick={() => handleSelectFile(path)} className={`flex items-center gap-2 pl-4 pr-2 h-full text-sm border-r border-border transition-colors ${activeFile === path ? 'bg-background text-text-primary' : 'text-text-secondary hover:bg-surface'}`}>
-                            <span className="truncate max-w-xs">{path.split('/').pop()}</span>
-                            <span onClick={(e) => handleCloseTab(path, e)} className="p-1 rounded-full hover:bg-accent-hover"><XMarkIcon className="w-3.5 h-3.5"/></span>
+            <PanelGroup direction="horizontal">
+                <Panel defaultSize={20} minSize={15} maxSize={40} className="flex flex-col min-w-0">
+                    <FileExplorer files={files} activeFile={activeFile} onSelectFile={handleSelectFile} onUpdate={onUpdate} />
+                </Panel>
+                <PanelResizeHandle className="w-1 bg-border hover:bg-accent-hover transition-colors data-[resize-handle-state=drag]:bg-accent" />
+                <Panel defaultSize={80} minSize={30} className="flex flex-col min-w-0">
+                    <header className="flex items-center justify-between pl-4 pr-2 h-12 border-b border-border flex-shrink-0">
+                        <h2 className="text-sm font-semibold truncate" title={activeFile || 'Sandbox'}>{activeFile?.split('/').pop() || 'Sandbox'}</h2>
+                        <button onClick={onClose} className="p-2 rounded-md text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors">
+                            <XMarkIcon className="w-5 h-5" />
                         </button>
-                    ))}
-                </div>
-
-                <div className="flex-1 flex flex-col bg-background overflow-auto">
-                    {activeFile ? (
-                        <>
-                            <nav className="flex items-stretch px-2 border-b border-border bg-surface/50">
-                                <TabButton view="editor"><CodeBracketIcon className="w-4 h-4"/> Editor</TabButton>
-                                {isWebViewable && <TabButton view="preview"><EyeIcon className="w-4 h-4"/> Preview</TabButton>}
-                                {(isWebViewable || isRunnable) && <TabButton view="terminal"><TerminalIcon className="w-4 h-4"/> Terminal</TabButton>}
-                            </nav>
-                            <main className="flex-1 bg-background overflow-auto">
-                                {activeView === 'editor' && (
-                                    <textarea value={files[activeFile]?.code || ''} onChange={(e) => handleCodeChange(e.target.value)} className="w-full h-full bg-transparent text-text-primary p-4 resize-none font-mono text-sm leading-6 focus:outline-none" spellCheck="false"/>
-                                )}
-                                {activeView === 'preview' && isWebViewable && (
-                                    <PreviewView files={files} onUpdate={onUpdate}/>
-                                )}
-                                {activeView === 'terminal' && (isWebViewable || isRunnable) && (
-                                    <TerminalView 
-                                        files={files} 
-                                        projectType={projectType} 
-                                        consoleOutput={consoleOutput} 
-                                        onUpdate={onUpdate}
-                                        onAutoFixRequest={onAutoFixRequest} 
+                    </header>
+                    
+                    <PanelGroup direction="vertical">
+                        <Panel defaultSize={60} minSize={10} className="flex flex-col min-w-0">
+                            <div className="flex items-end border-b border-border bg-surface/30 h-10 overflow-x-auto flex-shrink-0">
+                                {openFiles.map(path => (
+                                    <button key={path} onClick={() => handleSelectFile(path)} className={`flex items-center gap-2 pl-4 pr-2 h-full text-sm border-r border-border transition-colors ${activeFile === path ? 'bg-background text-text-primary' : 'text-text-secondary hover:bg-surface'}`}>
+                                        <span className="truncate max-w-xs">{path.split('/').pop()}</span>
+                                        <span onClick={(e) => handleCloseTab(path, e)} className="p-1 rounded-full hover:bg-accent-hover"><XMarkIcon className="w-3.5 h-3.5"/></span>
+                                    </button>
+                                ))}
+                            </div>
+                             <main className="flex-1 bg-background overflow-auto relative">
+                                {activeFile ? (
+                                    <Editor
+                                        key={activeFile}
+                                        path={activeFile}
+                                        value={files[activeFile]?.code || ''}
+                                        language={editorLanguage}
+                                        onChange={(value) => handleCodeChange(value || '')}
+                                        theme="vs-dark"
+                                        options={{ 
+                                            minimap: { enabled: false }, 
+                                            scrollBeyondLastLine: false, 
+                                            wordWrap: 'on',
+                                            fontSize: 14,
+                                            tabSize: 2,
+                                        }}
                                     />
+                                ) : (
+                                    <div className="flex flex-col items-center justify-center h-full text-center text-text-secondary">
+                                       <CodeBracketIcon className="w-16 h-16 mb-4 opacity-20"/>
+                                       <p>No file selected</p>
+                                       <p className="text-sm text-text-tertiary">Select a file from the explorer to begin editing.</p>
+                                    </div>
                                 )}
                             </main>
-                        </>
-                    ) : (
-                        <div className="flex flex-col items-center justify-center h-full text-center text-text-secondary">
-                           <CodeBracketIcon className="w-16 h-16 mb-4 opacity-20"/>
-                           <p>No file selected</p>
-                           <p className="text-sm text-text-tertiary">Select a file from the explorer to begin editing.</p>
-                        </div>
-                    )}
-                </div>
-            </div>
+                        </Panel>
+                        <PanelResizeHandle className="h-1 bg-border hover:bg-accent-hover transition-colors data-[resize-handle-state=drag]:bg-accent" />
+                        <Panel defaultSize={40} minSize={10} className="flex flex-col min-w-0">
+                            {BottomView()}
+                        </Panel>
+                    </PanelGroup>
+                </Panel>
+            </PanelGroup>
         </div>
     );
 };

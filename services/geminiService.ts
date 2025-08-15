@@ -86,6 +86,8 @@ Before your main response, you MUST output your internal design and development 
 ]
   \`\`\`
 - **Legacy Code Generator**: You can still use markdown code blocks (\`\`\`jsx) for simple, single-component snippets. These will appear in the chat and have an "Open in Sandbox" button. Use the File System Sandbox for any multi-file or complete project requests.
+
+**SANDBOX UPGRADE:** The sandbox is now a high-fidelity development environment powered by the Monaco Editor (the engine behind VS Code). It supports syntax highlighting, IntelliSense, and error checking. The UI is composed of resizable panels, allowing the user to customize their workspace. When generating web components, you can use the \`react-resizable-panels\` library for layout. Treat this as a professional-grade tool.
 `;
 
 const systemInstructions = {
