@@ -11,7 +11,6 @@ type SandboxProps = {
   onAutoFixRequest: (error: string, code: string, language: string) => void;
 };
 
-type ActiveView = 'editor' | 'preview' | 'terminal';
 type ProjectType = 'python' | 'node' | 'web' | 'unknown';
 
 // --- File Explorer ---
@@ -95,7 +94,7 @@ const FileExplorer: React.FC<{
                             <FolderIcon className="w-5 h-5 text-text-tertiary" />
                             <span className="truncate">{name}</span>
                         </button>
-                        {isOpen && <div>{renderTree(content, currentPath)}</div>}
+                        {isOpen && <div className="pl-3 border-l border-border/50 ml-3">{renderTree(content, currentPath)}</div>}
                     </div>
                 );
             } else {
@@ -105,9 +104,9 @@ const FileExplorer: React.FC<{
                         onClick={() => onSelectFile(currentPath)} 
                         data-context-menu-id="sandbox-file"
                         data-path={currentPath}
-                        className={`w-full flex items-center gap-2 text-left pr-2 py-1.5 text-sm rounded-md transition-colors ${activeFile === currentPath ? 'bg-accent-hover text-text-primary' : 'text-text-secondary hover:bg-surface/50 hover:text-text-primary'}`}
+                        className={`w-full flex items-center gap-2 text-left pr-2 py-1.5 text-sm rounded-md transition-colors pl-3 ${activeFile === currentPath ? 'bg-accent-hover text-text-primary' : 'text-text-secondary hover:bg-surface/50 hover:text-text-primary'}`}
                     >
-                        <span className="w-4 h-4 flex-shrink-0" />
+                        <span className="w-4 h-4 flex-shrink-0 ml-3" />
                         <FileIcon className="w-5 h-5 text-gray-400/80" />
                         <span className="truncate">{name}</span>
                     </button>
@@ -134,7 +133,11 @@ const resolvePath = (base: string, relative: string): string => {
     // if relative path starts with '/', it's from the root.
     if (relative.startsWith('/')) {
         stack.length = 0;
+    } else {
+      // It's relative, so pop the filename from the base path.
+      stack.pop();
     }
+
     relative.split('/').forEach(part => {
         if (part === '.' || part === '') return;
         if (part === '..') {
@@ -146,29 +149,88 @@ const resolvePath = (base: string, relative: string): string => {
     return stack.join('/');
 };
 
-const consoleInterceptor = `
+
+const interceptorScript = `
     const formatArg = (arg) => {
         if (arg instanceof Error) { return \`Error: \${arg.message}\\n\${arg.stack}\`; }
         if (typeof arg === 'object' && arg !== null) { try { return JSON.stringify(arg, null, 2); } catch (e) { return String(arg); } }
         return String(arg);
     };
-    const postMsg = (type, args) => {
+    const postConsoleMsg = (type, args) => {
         const payload = args.map(formatArg).join(' ');
-        window.parent.postMessage({ source: 'preview-iframe', type, payload }, '*');
+        window.parent.postMessage({ source: 'preview-console', type, payload }, '*');
     };
     ['log', 'warn', 'error'].forEach(type => {
         const original = console[type];
-        console[type] = (...args) => { postMsg(type, args); original.apply(console, args); };
+        console[type] = (...args) => { postConsoleMsg(type, args); original.apply(console, args); };
     });
-    window.addEventListener('error', e => postMsg('error', [e.message]));
-    window.addEventListener('unhandledrejection', e => postMsg('error', ['Unhandled Promise Rejection:', e.reason]));
+    window.addEventListener('error', e => postConsoleMsg('error', [e.message]));
+    window.addEventListener('unhandledrejection', e => postConsoleMsg('error', ['Unhandled Promise Rejection:', e.reason]));
+
+    // --- Fetch Interceptor ---
+    const RealFetch = window.fetch;
+    const fetchPromises = {};
+    let fetchCounter = 0;
+
+    window.addEventListener('message', (event) => {
+        if (event.data?.source === 'sandbox-response') {
+            const { id, response, error } = event.data;
+            if (fetchPromises[id]) {
+                if (error) {
+                    fetchPromises[id].reject(new Error(error));
+                } else {
+                    const res = new Response(response.body, {
+                        status: response.status,
+                        statusText: response.statusText,
+                        headers: response.headers
+                    });
+                    fetchPromises[id].resolve(res);
+                }
+                delete fetchPromises[id];
+            }
+        }
+    });
+
+    window.fetch = async (resource, options) => {
+        const url = resource instanceof Request ? resource.url : resource;
+        const fullUrl = new URL(url, window.location.href);
+
+        if (fullUrl.origin === window.location.origin) {
+            const id = fetchCounter++;
+            const body = options?.body;
+            let serializedBody = body;
+            if (body instanceof Blob) {
+                serializedBody = await new Promise(resolve => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result);
+                    reader.readAsDataURL(body);
+                });
+            }
+
+            return new Promise((resolve, reject) => {
+                fetchPromises[id] = { resolve, reject };
+                window.parent.postMessage({
+                    source: 'preview-request',
+                    id,
+                    request: {
+                        url: fullUrl.pathname + fullUrl.search,
+                        method: options?.method || 'GET',
+                        headers: options?.headers ? Object.fromEntries(new Headers(options.headers).entries()) : {},
+                        body: serializedBody
+                    }
+                }, '*');
+            });
+        }
+        return RealFetch(resource, options);
+    };
 `;
 
 // --- PreviewView Component for Web Projects ---
 const PreviewView: React.FC<{
     files: { [path: string]: SandboxFile };
     onUpdate: SandboxProps['onUpdate'];
-}> = ({ files, onUpdate }) => {
+    iframeRef: React.RefObject<HTMLIFrameElement>;
+}> = ({ files, onUpdate, iframeRef }) => {
     const [srcDoc, setSrcDoc] = useState('');
     const [refreshKey, setRefreshKey] = useState(0);
     const [isFullScreen, setIsFullScreen] = useState(false);
@@ -177,7 +239,7 @@ const PreviewView: React.FC<{
         const headTag = /<head[^>]*>/i.exec(processedHtml);
         if (headTag) {
             const injectionPoint = headTag.index + headTag[0].length;
-            const interceptorScript = `
+            const fullInterceptorScript = `
                 <script type="importmap">
                 {
                   "imports": {
@@ -186,16 +248,16 @@ const PreviewView: React.FC<{
                   }
                 }
                 </script>
-                <script>${consoleInterceptor}</script>
+                <script>${interceptorScript}</script>
             `;
-            return processedHtml.slice(0, injectionPoint) + interceptorScript + processedHtml.slice(injectionPoint);
+            return processedHtml.slice(0, injectionPoint) + fullInterceptorScript + processedHtml.slice(injectionPoint);
         }
          return `
             <!DOCTYPE html>
             <html>
                 <head>
                     <script type="importmap">{ "imports": { "react": "https://esm.sh/react@18.2.0", "react-dom/client": "https://esm.sh/react-dom@18.2.0/client" }}</script>
-                    <script>${consoleInterceptor}</script>
+                    <script>${interceptorScript}</script>
                 </head>
                 <body>${processedHtml}</body>
             </html>`;
@@ -210,10 +272,10 @@ const PreviewView: React.FC<{
             }
 
             let htmlContent = indexHtmlFile[1].code;
-            const basePath = indexHtmlFile[0].includes('/') ? indexHtmlFile[0].substring(0, indexHtmlFile[0].lastIndexOf('/')) : '';
+            const basePath = indexHtmlFile[0];
 
             htmlContent = htmlContent.replace(/<link(?=.*\shref="([^"]+?)")[^>]*>/g, (match, href) => {
-                if (!href || !href.endsWith('.css') || href.startsWith('http')) return match;
+                if (!href || href.startsWith('http')) return match;
                 const cssPath = resolvePath(basePath, href);
                 const cssFile = files[cssPath];
                 return cssFile ? `<style>${cssFile.code}</style>` : `<!-- Link to ${href} (not found at ${cssPath}) -->`;
@@ -235,7 +297,7 @@ const PreviewView: React.FC<{
 
     useEffect(() => {
         const handleIframeMessages = (event: MessageEvent) => {
-            if (event.data?.source === 'preview-iframe') {
+            if (event.data?.source === 'preview-console') {
                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: event.data.type, message: event.data.payload }] }));
             }
         };
@@ -255,7 +317,7 @@ const PreviewView: React.FC<{
                 </button>
             </div>
             <div className="flex-1 bg-black/50 p-4">
-                <iframe key={refreshKey} srcDoc={srcDoc} title="Preview" sandbox="allow-scripts allow-modals allow-same-origin" className="w-full h-full border-0 bg-white rounded-md shadow-lg" />
+                <iframe ref={iframeRef} key={refreshKey} srcDoc={srcDoc} title="Preview" sandbox="allow-scripts allow-modals allow-same-origin" className="w-full h-full border-0 bg-white rounded-md shadow-lg" />
             </div>
         </div>
     );
@@ -268,12 +330,14 @@ const TerminalView: React.FC<{
     consoleOutput?: { type: string; message: string }[];
     onUpdate: SandboxProps['onUpdate'];
     onAutoFixRequest: SandboxProps['onAutoFixRequest'];
-}> = ({ files, projectType, consoleOutput, onUpdate, onAutoFixRequest }) => {
+    pyodideRef: React.MutableRefObject<any>;
+    workerRef: React.MutableRefObject<Worker | null>;
+    onBackendReady: (isReady: boolean) => void;
+    isBackendReady: boolean;
+}> = ({ files, projectType, consoleOutput, onUpdate, onAutoFixRequest, pyodideRef, workerRef, onBackendReady, isBackendReady }) => {
     const [isPyodideLoading, setIsPyodideLoading] = useState(false);
     const [isPyodideReady, setIsPyodideReady] = useState(false);
-    const pyodideRef = useRef<any>(null);
     const [isRunning, setIsRunning] = useState(false);
-    const workerRef = useRef<Worker | null>(null);
     const activeFile = Object.keys(files)[0]; // For auto-fix context
 
     useEffect(() => {
@@ -282,6 +346,7 @@ const TerminalView: React.FC<{
             setIsPyodideLoading(true);
             try {
                 pyodideRef.current = await (window as any).loadPyodide();
+                await pyodideRef.current.loadPackage(["micropip", "pyodide-http"]);
                 setIsPyodideReady(true);
             } catch (error) {
                 console.error("Failed to load Pyodide", error);
@@ -291,14 +356,17 @@ const TerminalView: React.FC<{
             }
         }
         initPyodide();
-    }, [projectType, isPyodideReady, isPyodideLoading, onUpdate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [projectType, isPyodideReady, isPyodideLoading]);
 
     useEffect(() => {
         return () => { if (workerRef.current) workerRef.current.terminate(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const handleRun = async () => {
         setIsRunning(true);
+        onBackendReady(false);
         onUpdate(p => ({ ...p!, consoleOutput: [] }));
 
         if (projectType === 'python') {
@@ -313,14 +381,16 @@ const TerminalView: React.FC<{
 
             try {
                 for (const path in files) {
-                    if (path.includes('/')) pyodide.FS.mkdirTree(path.substring(0, path.lastIndexOf('/')));
+                    const dir = path.substring(0, path.lastIndexOf('/'));
+                    if (dir) pyodide.FS.mkdirTree(dir);
                     pyodide.FS.writeFile(path, files[path].code);
                 }
                 const entryPoint = ['main.py', 'app.py'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.py'));
                 if (entryPoint) {
                     onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${entryPoint}...` }] }));
-                    await pyodide.loadPackage("micropip");
+                    await pyodide.runPythonAsync(`import pyodide_http; pyodide_http.patch_all();`);
                     await pyodide.runPythonAsync(files[entryPoint].code);
+                    onBackendReady(true); // Assume server is ready after script runs
                 } else throw new Error("No Python entry point found (e.g., main.py).");
             } catch (e: any) {
                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] }));
@@ -331,62 +401,53 @@ const TerminalView: React.FC<{
             const workerCode = `
                 const files = {};
                 const moduleCache = {};
+                let serverRequestHandler = null;
+
+                const http = {
+                    createServer: (handler) => {
+                        serverRequestHandler = handler;
+                        return {
+                            listen: (port, cb) => {
+                                self.postMessage({ t: 'server-ready' });
+                                if (cb) cb();
+                            },
+                            on: () => {} // no-op for simplicity
+                        };
+                    }
+                };
 
                 const resolvePath = (currentPath, requestedPath) => {
                     if (!requestedPath.startsWith('.')) return requestedPath;
-
                     const currentDirParts = currentPath.split('/').slice(0, -1);
                     const requestedParts = requestedPath.split('/');
-
                     for (const part of requestedParts) {
                         if (part === '.' || part === '') continue;
-                        if (part === '..') {
-                            currentDirParts.pop();
-                        } else {
-                            currentDirParts.push(part);
-                        }
+                        if (part === '..') currentDirParts.pop(); else currentDirParts.push(part);
                     }
                     return currentDirParts.join('/');
                 };
 
                 const customRequire = (requestedPath, currentPath) => {
+                    if (requestedPath === 'http') return http;
+
                     const resolvedPath = resolvePath(currentPath, requestedPath);
-                    
-                    let finalPath = null;
-                    const potentialPaths = [
-                        resolvedPath,
-                        resolvedPath + '.js',
-                        resolvedPath + '/index.js'
-                    ];
-                    
-                    for (const p of potentialPaths) {
-                        if (files[p]) {
-                            finalPath = p;
-                            break;
-                        }
-                    }
+                    const potentialPaths = [resolvedPath, resolvedPath + '.js', resolvedPath + '/index.js'];
+                    const finalPath = potentialPaths.find(p => files[p]);
 
-                    if (!finalPath) {
-                        throw new Error(\`Cannot find module '\${requestedPath}' required from \${currentPath}\`);
-                    }
-
-                    if (moduleCache[finalPath]) {
-                        return moduleCache[finalPath].exports;
-                    }
+                    if (!finalPath) throw new Error(\`Cannot find module '\${requestedPath}' required from \${currentPath}\`);
+                    if (moduleCache[finalPath]) return moduleCache[finalPath].exports;
 
                     const code = files[finalPath];
                     const module = { exports: {} };
                     moduleCache[finalPath] = module;
-
                     const requireWithContext = (p) => customRequire(p, finalPath);
                     
                     try {
-                        const wrapper = new Function('require', 'module', 'exports', code);
-                        wrapper(requireWithContext, module, module.exports);
+                        const wrapper = new Function('require', 'module', 'exports', '__dirname', code);
+                        wrapper(requireWithContext, module, module.exports, finalPath.substring(0, finalPath.lastIndexOf('/')) || '.');
                     } catch(e) {
                         throw new Error(\`Error in module \${finalPath}: \${e.message}\`);
                     }
-                    
                     return module.exports;
                 };
 
@@ -397,45 +458,46 @@ const TerminalView: React.FC<{
                 };
                 
                 self.onmessage = (e) => {
-                    if (e.data.type === 'init') {
-                        Object.keys(files).forEach(key => delete files[key]);
+                    const { type, id, request } = e.data;
+                    if (type === 'init') {
                         Object.assign(files, e.data.files);
-                        Object.keys(moduleCache).forEach(key => delete moduleCache[key]);
-                    } else if (e.data.type === 'run') {
+                    } else if (type === 'run') {
                         try {
                             customRequire(e.data.entry, '/');
-                        } catch (err) {
-                            self.console.error(err.stack || err.message);
-                        } finally {
-                            self.postMessage({ t: 'done' });
+                        } catch (err) { self.console.error(err.stack || err.message); } 
+                        finally { self.postMessage({ t: 'done' }); }
+                    } else if (type === 'http-request') {
+                         if (!serverRequestHandler) {
+                            self.postMessage({ t: 'http-response', id, error: 'No HTTP server is running.' });
+                            return;
                         }
+                        const req = { url: request.url, method: request.method, headers: request.headers };
+                        const res = {
+                            _headers: {}, _statusCode: 200,
+                            setHeader: (n, v) => { res._headers[n.toLowerCase()] = v; },
+                            writeHead: (sc, h) => { res._statusCode = sc; Object.assign(res._headers, h || {}); return res; },
+                            end: (b) => self.postMessage({ t: 'http-response', id, response: { status: res._statusCode, headers: res._headers, body: b || '' }})
+                        };
+                        serverRequestHandler(req, res);
                     }
                 };
             `;
 
             workerRef.current = new Worker(URL.createObjectURL(new Blob([workerCode])));
             workerRef.current.onmessage = (e) => {
-                if (e.data.t === 'done') {
-                    setIsRunning(false);
-                    if (workerRef.current) { workerRef.current.terminate(); workerRef.current = null; }
-                } else {
-                    onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: e.data.t, message: e.data.m }] }));
-                }
+                if (e.data.t === 'done') setIsRunning(false);
+                else if (e.data.t === 'server-ready') onBackendReady(true);
+                else if (e.data.t === 'http-response') { /* Handled by Sandbox */ }
+                else onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: e.data.t, message: e.data.m }] }));
             };
             workerRef.current.onerror = (e) => { onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] })); setIsRunning(false); };
             
-            const entryPoint = ['index.js', 'main.js', 'app.js'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.js'));
+            const entryPoint = ['index.js', 'main.js', 'app.js', 'server.js'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.js'));
             if (entryPoint) {
                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${entryPoint}...` }] }));
-
-                const filesToSend = Object.entries(files).reduce((acc, [path, file]) => {
-                    acc[path] = file.code;
-                    return acc;
-                }, {} as {[key: string]: string});
-        
+                const filesToSend = Object.entries(files).reduce((acc, [path, file]) => ({...acc, [path]: file.code}), {});
                 workerRef.current.postMessage({ type: 'init', files: filesToSend });
                 workerRef.current.postMessage({ type: 'run', entry: entryPoint });
-
             } else {
                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: 'No JS entry point found (e.g., index.js).' }] }));
                 setIsRunning(false);
@@ -450,17 +512,20 @@ const TerminalView: React.FC<{
     
     return (
         <div data-context-menu-id="preview-console" className="w-full h-full flex flex-col bg-background">
-            <nav className="flex items-stretch px-2 border-b border-border bg-surface/50 h-10">
-                <div className="flex items-center gap-2 px-2 py-2 text-sm font-medium text-text-primary">
-                    <TerminalIcon className="w-4 h-4"/> Terminal
-                </div>
-            </nav>
             <div className="flex items-center justify-between p-1.5 border-b border-border flex-shrink-0">
                 {isRunnable ? (
-                    <button onClick={handleRun} disabled={buttonDisabled} className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 text-green-400 rounded-md font-medium text-sm hover:bg-green-500/20 transition-colors disabled:opacity-50 disabled:cursor-wait">
-                        {isLoading || isRunning ? <RefreshIcon className="w-4 h-4 animate-spin"/> : <PlayIcon className="w-4 h-4" />}
-                        {isLoading ? 'Loading Python...' : isRunning ? 'Running...' : 'Run'}
-                    </button>
+                    <div className="flex items-center gap-4">
+                        <button onClick={handleRun} disabled={buttonDisabled} className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 text-green-400 rounded-md font-medium text-sm hover:bg-green-500/20 transition-colors disabled:opacity-50 disabled:cursor-wait">
+                            {isLoading || isRunning ? <RefreshIcon className="w-4 h-4 animate-spin"/> : <PlayIcon className="w-4 h-4" />}
+                            {isLoading ? 'Loading Python...' : isRunning ? 'Running...' : 'Run'}
+                        </button>
+                        {isBackendReady && (
+                            <div className="flex items-center gap-2 text-xs text-green-400 animate-fade-in">
+                                <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+                                Backend server is live
+                            </div>
+                        )}
+                    </div>
                 ): <div />}
                 {consoleOutput && consoleOutput.length > 0 && (
                     <button onClick={() => onUpdate(p => ({ ...p!, consoleOutput: [] }))} title="Clear Console" className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary"><TrashIcon className="w-4 h-4" /></button>
@@ -495,42 +560,70 @@ const TerminalView: React.FC<{
 // --- Main Sandbox ---
 export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdate, onAutoFixRequest }) => {
     const { files, openFiles, activeFile, consoleOutput } = sandboxState;
-    const [activeView, setActiveView] = useState<ActiveView>('editor');
+    const iframeRef = useRef<HTMLIFrameElement>(null);
+    const workerRef = useRef<Worker | null>(null);
+    const pyodideRef = useRef<any>(null);
+    const [isBackendReady, setIsBackendReady] = useState(false);
 
     const projectType: ProjectType = useMemo(() => {
         const fileNames = Object.keys(files || {});
         if (fileNames.length === 0) return 'unknown';
-
         if (fileNames.some(name => name.endsWith('.html'))) return 'web';
         if (fileNames.some(name => name.endsWith('.py'))) return 'python';
-        if (fileNames.some(name => ['index.js', 'main.js', 'app.js'].includes(name) || name === 'package.json')) return 'node';
+        if (fileNames.some(name => ['server.js', 'index.js', 'main.js', 'app.js'].includes(name) || name === 'package.json')) return 'node';
         if (fileNames.some(name => name.endsWith('.jsx') || name.endsWith('.js'))) return 'web';
-        
         return 'unknown';
     }, [files]);
     
-    const isRunnable = projectType === 'python' || projectType === 'node';
-    const isWebViewable = projectType === 'web';
+    useEffect(() => {
+      setIsBackendReady(false);
+    }, [sandboxState.files]);
 
     useEffect(() => {
-        if (activeView === 'preview' && !isWebViewable) setActiveView('editor');
-    }, [projectType, activeView, isWebViewable, isRunnable]);
-    
-    useEffect(() => {
-        if (projectType === 'web' && activeView !== 'editor') {
-            setActiveView('preview');
-        } else if (isRunnable && activeView !== 'editor') {
-            setActiveView('terminal');
-        } else if (projectType !== 'web' && activeView === 'preview') {
-            setActiveView('editor');
+      const handleMessages = async (event: MessageEvent) => {
+        if (event.data?.source === 'preview-request') {
+          const { id, request } = event.data;
+          let responseData, errorData;
+
+          if (projectType === 'node' && workerRef.current) {
+            const responsePromise = new Promise<{response?: any, error?: any}>(resolve => {
+                const handler = (e: MessageEvent) => {
+                    if (e.data.t === 'http-response' && e.data.id === id) {
+                        workerRef.current?.removeEventListener('message', handler);
+                        resolve({ response: e.data.response, error: e.data.error });
+                    }
+                };
+                workerRef.current.addEventListener('message', handler);
+            });
+            workerRef.current.postMessage({ type: 'http-request', id, request });
+            const { response, error } = await responsePromise;
+            responseData = response;
+            errorData = error;
+
+          } else if (projectType === 'python' && pyodideRef.current) {
+             try {
+                const pyodide = pyodideRef.current;
+                const resp = await pyodide.pyimport("pyodide_http").fetch(request.url, {
+                    method: request.method,
+                    headers: request.headers,
+                    body: request.body,
+                });
+                responseData = { status: resp.status, statusText: resp.statusText, headers: Object.fromEntries(resp.headers.entries()), body: await resp.string() };
+             } catch(e: any) { errorData = e.message; }
+          } else {
+            errorData = 'No backend server is running for this project type.';
+          }
+
+          iframeRef.current?.contentWindow?.postMessage({ source: 'sandbox-response', id, response: responseData, error: errorData }, '*');
         }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [projectType, activeFile]);
+      };
 
-
+      window.addEventListener('message', handleMessages);
+      return () => window.removeEventListener('message', handleMessages);
+    }, [projectType]);
+    
     const handleSelectFile = (path: string) => {
         onUpdate(prev => ({ ...prev!, activeFile: path, openFiles: prev!.openFiles.includes(path) ? prev!.openFiles : [...prev!.openFiles, path] }));
-        setActiveView('editor');
     };
 
     const handleCloseTab = (path: string, e: React.MouseEvent) => {
@@ -562,9 +655,6 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
             case 'python': return 'python';
             case 'py': return 'python';
             case 'python-api': return 'python';
-            case 'html': return 'html';
-            case 'css': return 'css';
-            case 'json': return 'json';
             default: return l;
         }
     }
@@ -572,15 +662,9 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
     const editorLanguage = activeFile ? mapLanguageToMonaco(files[activeFile]?.language) : 'plaintext';
 
     const BottomView = () => {
-        if (isWebViewable) return <PreviewView files={files} onUpdate={onUpdate}/>;
-        if (isRunnable) return <TerminalView files={files} projectType={projectType} consoleOutput={consoleOutput} onUpdate={onUpdate} onAutoFixRequest={onAutoFixRequest} />;
-        return (
-            <div className="flex flex-col items-center justify-center h-full text-center text-text-secondary">
-               <CodeBracketIcon className="w-16 h-16 mb-4 opacity-20"/>
-               <p>No preview available</p>
-               <p className="text-sm text-text-tertiary">This project type does not have a visual preview.</p>
-            </div>
-        );
+        const commonProps = { files, consoleOutput, onUpdate, onAutoFixRequest };
+        if (projectType === 'web') return <PreviewView {...commonProps} files={files} iframeRef={iframeRef} />;
+        return <TerminalView {...commonProps} projectType={projectType} pyodideRef={pyodideRef} workerRef={workerRef} onBackendReady={setIsBackendReady} isBackendReady={isBackendReady}/>;
     };
 
     return (
