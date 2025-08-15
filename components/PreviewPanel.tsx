@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Chat, SandboxFile } from '../types';
-import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, FolderIcon, FileIcon, ChevronRightIcon, ChevronDownIcon, PlusIcon, RefreshIcon, TrashIcon, ExpandIcon, CollapseIcon } from './icons';
+import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, FolderIcon, FileIcon, ChevronRightIcon, ChevronDownIcon, PlusIcon, RefreshIcon, TrashIcon, ExpandIcon, CollapseIcon, DevicePhoneMobileIcon, DeviceTabletIcon, ComputerDesktopIcon } from './icons';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import Editor from '@monaco-editor/react';
 
@@ -226,6 +226,8 @@ const interceptorScript = `
 `;
 
 // --- PreviewView Component for Web Projects ---
+type DeviceMode = 'desktop' | 'tablet' | 'mobile';
+
 const PreviewView: React.FC<{
     files: { [path: string]: SandboxFile };
     onUpdate: SandboxProps['onUpdate'];
@@ -234,6 +236,13 @@ const PreviewView: React.FC<{
     const [srcDoc, setSrcDoc] = useState('');
     const [refreshKey, setRefreshKey] = useState(0);
     const [isFullScreen, setIsFullScreen] = useState(false);
+    const [deviceMode, setDeviceMode] = useState<DeviceMode>('desktop');
+
+    const deviceDimensions: { [key in DeviceMode]: { width: string; height: string } } = {
+        desktop: { width: '100%', height: '100%' },
+        tablet: { width: '768px', height: '1024px' },
+        mobile: { width: '375px', height: '812px' },
+    };
 
     const buildSrcDoc = useCallback((processedHtml: string) => {
         const headTag = /<head[^>]*>/i.exec(processedHtml);
@@ -307,17 +316,51 @@ const PreviewView: React.FC<{
 
     return (
         <div className={`w-full h-full flex flex-col bg-background ${isFullScreen ? 'fixed inset-0 z-50' : ''}`}>
-            <div className="flex items-center p-1.5 border-b border-border flex-shrink-0">
-                <div className="flex-grow" />
-                <button onClick={() => setRefreshKey(k => k + 1)} title="Refresh Preview" className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors">
-                    <RefreshIcon className="w-5 h-5" />
-                </button>
-                 <button onClick={() => setIsFullScreen(p => !p)} title={isFullScreen ? "Exit Fullscreen" : "Enter Fullscreen"} className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors">
-                    {isFullScreen ? <CollapseIcon className="w-5 h-5" /> : <ExpandIcon className="w-5 h-5" />}
-                </button>
+            <div className="flex items-center justify-between p-1.5 border-b border-border flex-shrink-0">
+                <div className="flex items-center gap-1 bg-surface p-1 rounded-lg">
+                    <button
+                        onClick={() => setDeviceMode('desktop')}
+                        className={`p-1.5 rounded-md transition-colors ${deviceMode === 'desktop' ? 'bg-accent-hover text-text-primary' : 'text-text-secondary hover:bg-accent-hover'}`}
+                        title="Desktop View"
+                    >
+                        <ComputerDesktopIcon className="w-5 h-5" />
+                    </button>
+                    <button
+                        onClick={() => setDeviceMode('tablet')}
+                        className={`p-1.5 rounded-md transition-colors ${deviceMode === 'tablet' ? 'bg-accent-hover text-text-primary' : 'text-text-secondary hover:bg-accent-hover'}`}
+                        title="Tablet View"
+                    >
+                        <DeviceTabletIcon className="w-5 h-5" />
+                    </button>
+                    <button
+                        onClick={() => setDeviceMode('mobile')}
+                        className={`p-1.5 rounded-md transition-colors ${deviceMode === 'mobile' ? 'bg-accent-hover text-text-primary' : 'text-text-secondary hover:bg-accent-hover'}`}
+                        title="Mobile View"
+                    >
+                        <DevicePhoneMobileIcon className="w-5 h-5" />
+                    </button>
+                </div>
+                <div className="flex items-center">
+                    <button onClick={() => setRefreshKey(k => k + 1)} title="Refresh Preview" className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors">
+                        <RefreshIcon className="w-5 h-5" />
+                    </button>
+                     <button onClick={() => setIsFullScreen(p => !p)} title={isFullScreen ? "Exit Fullscreen" : "Enter Fullscreen"} className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors">
+                        {isFullScreen ? <CollapseIcon className="w-5 h-5" /> : <ExpandIcon className="w-5 h-5" />}
+                    </button>
+                </div>
             </div>
-            <div className="flex-1 bg-black/50 p-4">
-                <iframe ref={iframeRef} key={refreshKey} srcDoc={srcDoc} title="Preview" sandbox="allow-scripts allow-modals allow-same-origin" className="w-full h-full border-0 bg-white rounded-md shadow-lg" />
+            <div className="flex-1 bg-black/50 p-4 flex items-center justify-center overflow-auto">
+                <div
+                    className="transition-all duration-300 ease-in-out flex-shrink-0 shadow-2xl bg-surface rounded-lg"
+                    style={{
+                        width: deviceDimensions[deviceMode].width,
+                        height: deviceMode === 'desktop' ? '100%' : deviceDimensions[deviceMode].height,
+                        maxWidth: '100%',
+                        maxHeight: '100%',
+                    }}
+                >
+                    <iframe ref={iframeRef} key={refreshKey} srcDoc={srcDoc} title="Preview" sandbox="allow-scripts allow-modals allow-same-origin" className="w-full h-full border-0 bg-white rounded-md" />
+                </div>
             </div>
         </div>
     );
@@ -564,6 +607,8 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
     const workerRef = useRef<Worker | null>(null);
     const pyodideRef = useRef<any>(null);
     const [isBackendReady, setIsBackendReady] = useState(false);
+    const [activeBottomTab, setActiveBottomTab] = useState<'preview' | 'terminal'>('preview');
+
 
     const projectType: ProjectType = useMemo(() => {
         const fileNames = Object.keys(files || {});
@@ -578,6 +623,14 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
     useEffect(() => {
       setIsBackendReady(false);
     }, [sandboxState.files]);
+
+    useEffect(() => {
+        if (projectType === 'web') {
+            setActiveBottomTab('preview');
+        } else {
+            setActiveBottomTab('terminal');
+        }
+    }, [projectType]);
 
     useEffect(() => {
       const handleMessages = async (event: MessageEvent) => {
@@ -661,12 +714,6 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
 
     const editorLanguage = activeFile ? mapLanguageToMonaco(files[activeFile]?.language) : 'plaintext';
 
-    const BottomView = () => {
-        const commonProps = { files, consoleOutput, onUpdate, onAutoFixRequest };
-        if (projectType === 'web') return <PreviewView {...commonProps} files={files} iframeRef={iframeRef} />;
-        return <TerminalView {...commonProps} projectType={projectType} pyodideRef={pyodideRef} workerRef={workerRef} onBackendReady={setIsBackendReady} isBackendReady={isBackendReady}/>;
-    };
-
     return (
         <div className="flex w-full h-full bg-background border-l border-border">
             <PanelGroup direction="horizontal">
@@ -720,7 +767,47 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
                         </Panel>
                         <PanelResizeHandle className="h-1 bg-border hover:bg-accent-hover transition-colors data-[resize-handle-state=drag]:bg-accent" />
                         <Panel defaultSize={40} minSize={10} className="flex flex-col min-w-0">
-                            {BottomView()}
+                            <div className="flex flex-col min-w-0 h-full">
+                                {/* Tab Headers */}
+                                <div className="flex items-center border-b border-border flex-shrink-0 h-10 bg-surface/30">
+                                    {projectType === 'web' && (
+                                        <button
+                                            onClick={() => setActiveBottomTab('preview')}
+                                            className={`flex items-center gap-2 px-4 h-full text-sm border-r border-border transition-colors ${activeBottomTab === 'preview' ? 'bg-background text-text-primary' : 'text-text-secondary hover:bg-surface'}`}
+                                        >
+                                            <EyeIcon className="w-4 h-4" />
+                                            Preview
+                                        </button>
+                                    )}
+                                    <button
+                                        onClick={() => setActiveBottomTab('terminal')}
+                                        className={`flex items-center gap-2 px-4 h-full text-sm border-r border-border transition-colors ${activeBottomTab === 'terminal' ? 'bg-background text-text-primary' : 'text-text-secondary hover:bg-surface'}`}
+                                    >
+                                        <TerminalIcon className="w-4 h-4" />
+                                        Console
+                                    </button>
+                                </div>
+
+                                {/* Tab Content */}
+                                <div className="flex-1 overflow-hidden relative">
+                                    <div className={`w-full h-full ${activeBottomTab === 'preview' && projectType === 'web' ? 'block' : 'hidden'}`}>
+                                        <PreviewView files={files} onUpdate={onUpdate} iframeRef={iframeRef} />
+                                    </div>
+                                    <div className={`w-full h-full ${activeBottomTab === 'terminal' ? 'block' : 'hidden'}`}>
+                                        <TerminalView
+                                            files={files}
+                                            projectType={projectType}
+                                            consoleOutput={consoleOutput}
+                                            onUpdate={onUpdate}
+                                            onAutoFixRequest={onAutoFixRequest}
+                                            pyodideRef={pyodideRef}
+                                            workerRef={workerRef}
+                                            onBackendReady={setIsBackendReady}
+                                            isBackendReady={isBackendReady}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
                         </Panel>
                     </PanelGroup>
                 </Panel>
