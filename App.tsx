@@ -10,6 +10,7 @@ import { generateResponseStream } from './services/geminiService';
 import type { Part, Content } from '@google/genai';
 import { ContextMenu } from './components/ContextMenu';
 import { BoltIcon, CopyIcon, PencilIcon, PlusIcon, RefreshIcon, ShareIcon, TrashIcon, XMarkIcon } from './components/icons';
+import { ErrorAnalysisBanner } from './components/ErrorAnalysisBanner';
 
 const App: React.FC = () => {
   const [chats, setChats] = useState<Chat[]>([]);
@@ -624,6 +625,14 @@ Please analyze all errors and the code, explain the causes, and provide a single
             </div>
             <div className="w-full bg-background/50 backdrop-blur-md">
               <div className="max-w-3xl mx-auto p-4 md:p-6">
+                {activeChat?.sandboxState?.consoleOutput?.some(l => l.type === 'error') && (
+                  <div className="mb-4">
+                    <ErrorAnalysisBanner
+                        consoleOutput={activeChat.sandboxState.consoleOutput}
+                        onFixRequest={handleAutoFixAllErrorsRequest}
+                    />
+                  </div>
+                )}
                 <ChatInput 
                   onSendMessage={handleSendMessage} 
                   onStop={handleStop}
