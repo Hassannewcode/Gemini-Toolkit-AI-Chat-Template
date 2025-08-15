@@ -310,7 +310,92 @@ const TerminalView: React.FC<{
             }
         } else if (projectType === 'node') {
             if (workerRef.current) workerRef.current.terminate();
-            const workerCode = `self.console={log:(...a)=>self.postMessage({t:'log',m:a.join(' ')}),error:(...a)=>self.postMessage({t:'error',m:a.join(' ')}),warn:(...a)=>self.postMessage({t:'warn',m:a.join(' ')})};self.onmessage=e=>{try{eval(e.data)}catch(r){self.postMessage({t:'error',m:r.message})}finally{self.postMessage({t:'done'})}};`;
+            
+            const workerCode = `
+                const files = {};
+                const moduleCache = {};
+
+                const resolvePath = (currentPath, requestedPath) => {
+                    if (!requestedPath.startsWith('.')) return requestedPath;
+
+                    const currentDirParts = currentPath.split('/').slice(0, -1);
+                    const requestedParts = requestedPath.split('/');
+
+                    for (const part of requestedParts) {
+                        if (part === '.' || part === '') continue;
+                        if (part === '..') {
+                            currentDirParts.pop();
+                        } else {
+                            currentDirParts.push(part);
+                        }
+                    }
+                    return currentDirParts.join('/');
+                };
+
+                const customRequire = (requestedPath, currentPath) => {
+                    const resolvedPath = resolvePath(currentPath, requestedPath);
+                    
+                    let finalPath = null;
+                    const potentialPaths = [
+                        resolvedPath,
+                        resolvedPath + '.js',
+                        resolvedPath + '/index.js'
+                    ];
+                    
+                    for (const p of potentialPaths) {
+                        if (files[p]) {
+                            finalPath = p;
+                            break;
+                        }
+                    }
+
+                    if (!finalPath) {
+                        throw new Error(\`Cannot find module '\${requestedPath}' required from \${currentPath}\`);
+                    }
+
+                    if (moduleCache[finalPath]) {
+                        return moduleCache[finalPath].exports;
+                    }
+
+                    const code = files[finalPath];
+                    const module = { exports: {} };
+                    moduleCache[finalPath] = module;
+
+                    const requireWithContext = (p) => customRequire(p, finalPath);
+                    
+                    try {
+                        const wrapper = new Function('require', 'module', 'exports', code);
+                        wrapper(requireWithContext, module, module.exports);
+                    } catch(e) {
+                        throw new Error(\`Error in module \${finalPath}: \${e.message}\`);
+                    }
+                    
+                    return module.exports;
+                };
+
+                self.console = {
+                    log: (...args) => self.postMessage({ t: 'log', m: args.join(' ') }),
+                    error: (...args) => self.postMessage({ t: 'error', m: args.join(' ') }),
+                    warn: (...args) => self.postMessage({ t: 'warn', m: args.join(' ') })
+                };
+                
+                self.onmessage = (e) => {
+                    if (e.data.type === 'init') {
+                        Object.keys(files).forEach(key => delete files[key]);
+                        Object.assign(files, e.data.files);
+                        Object.keys(moduleCache).forEach(key => delete moduleCache[key]);
+                    } else if (e.data.type === 'run') {
+                        try {
+                            customRequire(e.data.entry, '/');
+                        } catch (err) {
+                            self.console.error(err.stack || err.message);
+                        } finally {
+                            self.postMessage({ t: 'done' });
+                        }
+                    }
+                };
+            `;
+
             workerRef.current = new Worker(URL.createObjectURL(new Blob([workerCode])));
             workerRef.current.onmessage = (e) => {
                 if (e.data.t === 'done') {
@@ -321,10 +406,19 @@ const TerminalView: React.FC<{
                 }
             };
             workerRef.current.onerror = (e) => { onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] })); setIsRunning(false); };
+            
             const entryPoint = ['index.js', 'main.js', 'app.js'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.js'));
             if (entryPoint) {
                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${entryPoint}...` }] }));
-                workerRef.current.postMessage(files[entryPoint].code);
+
+                const filesToSend = Object.entries(files).reduce((acc, [path, file]) => {
+                    acc[path] = file.code;
+                    return acc;
+                }, {} as {[key: string]: string});
+        
+                workerRef.current.postMessage({ type: 'init', files: filesToSend });
+                workerRef.current.postMessage({ type: 'run', entry: entryPoint });
+
             } else {
                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: 'No JS entry point found (e.g., index.js).' }] }));
                 setIsRunning(false);
@@ -384,9 +478,12 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
     const projectType: ProjectType = useMemo(() => {
         const fileNames = Object.keys(files || {});
         if (fileNames.length === 0) return 'unknown';
+
+        if (fileNames.some(name => name.endsWith('.html'))) return 'web';
         if (fileNames.some(name => name.endsWith('.py'))) return 'python';
-        if (fileNames.some(name => name.endsWith('index.js') || name.endsWith('main.js') || name.endsWith('app.js'))) return 'node';
-        if (fileNames.some(name => name.endsWith('.html') || name.endsWith('.jsx') || name.endsWith('.js'))) return 'web';
+        if (fileNames.some(name => ['index.js', 'main.js', 'app.js'].includes(name))) return 'node';
+        if (fileNames.some(name => name.endsWith('.jsx') || name.endsWith('.js'))) return 'web';
+        
         return 'unknown';
     }, [files]);
     

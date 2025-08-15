@@ -277,19 +277,6 @@ const App: React.FC = () => {
                 let newText = aiFinalMessage?.text || '';
 
                 if (aiFinalMessage) {
-                  // New: Handle stdout for code execution
-                  const stdoutMatch = newText.match(/```stdout\n([\s\S]*?)```/);
-                  if (stdoutMatch) {
-                      newText = newText.replace(stdoutMatch[0], '').trim();
-                      const output = stdoutMatch[1];
-                      if (output.trim()) {
-                          const consoleLines = output.split('\n').map(line => ({ type: 'log', message: line }));
-                          let sandbox = finalSandboxState || { files: {}, openFiles: [], activeFile: null, consoleOutput: [] };
-                          sandbox.consoleOutput = [...(sandbox.consoleOutput || []), ...consoleLines];
-                          finalSandboxState = sandbox;
-                      }
-                  }
-
                   // Handle filesystem operations
                   const filesJsonMatch = newText.match(/```json:files\n([\s\S]*?)```/);
                   if (filesJsonMatch) {
