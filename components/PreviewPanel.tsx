@@ -683,7 +683,7 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
 
     const handleCodeChange = (newCode: string) => {
         if (activeFile) {
-            onUpdate(prev => ({ ...prev!, files: { ...prev!, [activeFile]: { ...prev!.files[activeFile], code: newCode } } }));
+            onUpdate(prev => ({ ...prev!, files: { ...prev!.files, [activeFile]: { ...prev!.files[activeFile], code: newCode } } }));
         }
     };
     
