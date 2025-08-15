@@ -1,4 +1,5 @@
 
+
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatInput } from './components/ChatInput';
@@ -400,22 +401,29 @@ const App: React.FC = () => {
   }, [activeChatId]);
 
 
-  const handleAutoFixRequest = useCallback((error: string, code: string, language:string) => {
-    const prompt = `The following error was detected in the console:
+  const handleAutoFixRequest = useCallback((error: string) => {
+    if (!activeChat?.sandboxState?.files) return;
+    const { files } = activeChat.sandboxState;
 
+    const filesText = Object.entries(files).map(([path, file]) => {
+        return `File: \`${path}\`
+\`\`\`${file.language || path.split('.').pop()}
+${file.code}
+\`\`\``;
+    }).join('\n\n');
+
+    const prompt = `The following error was detected in the console:
 ---
 ${error}
 ---
-
-Here is the code that produced it:
-\`\`\`${language}
-${code}
-\`\`\`
-
-Please analyze the error and the code, explain the cause of the error, and provide a corrected version of the code by updating the relevant file in the sandbox.`;
+Here are all the files in the current project sandbox:
+---
+${filesText}
+---
+Please analyze this specific error in the context of the entire project, explain its cause, and provide a corrected version of the relevant file(s) by using file system operations to update them in the sandbox. Focus only on fixing this single error.`;
     
     _sendMessage(prompt, [], false, true);
-  }, [_sendMessage]);
+  }, [activeChat, _sendMessage]);
 
   const handleAutoFixAllErrorsRequest = useCallback(() => {
     if (!activeChat?.sandboxState) return;

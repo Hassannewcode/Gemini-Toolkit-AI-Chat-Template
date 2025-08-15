@@ -8,7 +8,7 @@ type SandboxProps = {
   sandboxState: NonNullable<Chat['sandboxState']>;
   onClose: () => void;
   onUpdate: (updater: (prevState: Chat['sandboxState']) => Chat['sandboxState']) => void;
-  onAutoFixRequest: (error: string, code: string, language: string) => void;
+  onAutoFixRequest: (error: string) => void;
 };
 
 type ProjectType = 'python' | 'node' | 'web' | 'unknown';
@@ -381,7 +381,6 @@ const TerminalView: React.FC<{
     const [isPyodideLoading, setIsPyodideLoading] = useState(false);
     const [isPyodideReady, setIsPyodideReady] = useState(false);
     const [isRunning, setIsRunning] = useState(false);
-    const activeFile = Object.keys(files)[0]; // For auto-fix context
 
     useEffect(() => {
         if (projectType !== 'python' || isPyodideReady || isPyodideLoading) return;
@@ -581,8 +580,8 @@ const TerminalView: React.FC<{
                             <pre className={`whitespace-pre-wrap flex-1 ${line.type === 'error' ? 'text-red-400' : line.type === 'info' ? 'text-blue-300' : ''}`}>
                                 <span className="select-none text-text-tertiary mr-3">{'>'}</span>{line.message}
                             </pre>
-                            {line.type === 'error' && activeFile && files[activeFile] && (
-                                <button onClick={() => onAutoFixRequest(line.message, files[activeFile]!.code, files[activeFile]!.language)} className="flex items-center gap-1.5 text-xs text-yellow-400/70 border border-yellow-400/20 bg-yellow-400/10 rounded-md px-2 py-1 ml-4 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-yellow-400/20 hover:text-yellow-300" title="Ask AI to fix this error">
+                            {line.type === 'error' && Object.keys(files).length > 0 && (
+                                <button onClick={() => onAutoFixRequest(line.message)} className="flex items-center gap-1.5 text-xs text-yellow-400/70 border border-yellow-400/20 bg-yellow-400/10 rounded-md px-2 py-1 ml-4 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-yellow-400/20 hover:text-yellow-300" title="Ask AI to fix this error">
                                     <BoltIcon className="w-3 h-3" /> Auto-Fix
                                 </button>
                             )}
