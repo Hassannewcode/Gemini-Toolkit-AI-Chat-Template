@@ -291,19 +291,25 @@ const TerminalView: React.FC<{
         onUpdate(p => ({ ...p!, consoleOutput: [] }));
 
         if (projectType === 'python') {
-            if (!pyodideRef.current) { setIsRunning(false); return; }
-            pyodideRef.current.setStdout({ batched: (msg: string) => onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'log', message: msg }] })) });
-            pyodideRef.current.setStderr({ batched: (msg: string) => onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: msg }] })) });
+            if (!pyodideRef.current) {
+                onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: "Python runtime is not ready." }] }));
+                setIsRunning(false);
+                return;
+            }
+            const pyodide = pyodideRef.current;
+            pyodide.setStdout({ batched: (msg: string) => onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'log', message: msg }] })) });
+            pyodide.setStderr({ batched: (msg: string) => onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: msg }] })) });
 
             try {
                 for (const path in files) {
-                    if (path.includes('/')) pyodideRef.current.FS.mkdirTree(path.substring(0, path.lastIndexOf('/')));
-                    pyodideRef.current.FS.writeFile(path, files[path].code);
+                    if (path.includes('/')) pyodide.FS.mkdirTree(path.substring(0, path.lastIndexOf('/')));
+                    pyodide.FS.writeFile(path, files[path].code);
                 }
                 const entryPoint = ['main.py', 'app.py'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.py'));
                 if (entryPoint) {
                     onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${entryPoint}...` }] }));
-                    await pyodideRef.current.runPythonAsync(files[entryPoint].code);
+                    await pyodide.loadPackage("micropip");
+                    await pyodide.runPythonAsync(files[entryPoint].code);
                 } else throw new Error("No Python entry point found (e.g., main.py).");
             } catch (e: any) {
                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] }));
