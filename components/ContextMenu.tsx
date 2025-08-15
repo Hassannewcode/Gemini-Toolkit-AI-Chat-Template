@@ -28,7 +28,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }
     };
   }, [onClose]);
   
-  const menuStyle = {
+  const menuStyle: React.CSSProperties = {
     top: `${y}px`,
     left: `${x}px`,
   };
@@ -55,27 +55,27 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }
         {items.map((item, index) => {
           if (item.isSeparator) {
             return <li key={`sep-${index}`}><div className="h-px bg-border my-1" /></li>;
-          } else {
-            // After checking for isSeparator, TypeScript correctly infers the type of `item` here.
-            return (
-              <li key={item.label}>
-                <button
-                  onClick={() => {
-                    if (item.disabled) {
-                      return;
-                    }
-                    item.action();
-                    onClose();
-                  }}
-                  disabled={item.disabled}
-                  className="w-full flex items-center gap-3 text-left px-3 py-2 text-sm rounded-md text-text-primary hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                >
-                  {item.icon && <span className="w-5 h-5 flex items-center justify-center text-text-secondary">{item.icon}</span>}
-                  <span className="flex-1">{item.label}</span>
-                </button>
-              </li>
-            );
           }
+          
+          // After checking for isSeparator, TypeScript correctly infers the type of `item` here.
+          return (
+            <li key={item.label}>
+              <button
+                onClick={() => {
+                  if (item.disabled) {
+                    return;
+                  }
+                  item.action();
+                  onClose();
+                }}
+                disabled={item.disabled}
+                className="w-full flex items-center gap-3 text-left px-3 py-2 text-sm rounded-md text-text-primary hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              >
+                {item.icon && <span className="w-5 h-5 flex items-center justify-center text-text-secondary">{item.icon}</span>}
+                <span className="flex-1">{item.label}</span>
+              </button>
+            </li>
+          );
         })}
       </ul>
     </div>

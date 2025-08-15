@@ -235,11 +235,11 @@ const ExecutionView: React.FC<{
                     <div className="flex items-center justify-between p-1.5 border-b border-border flex-shrink-0">
                         <button
                             onClick={() => onExecute(projectType)}
-                            title="Asks the AI to execute the code and return the output. This is a simulation, not a live execution environment."
-                            className="flex items-center gap-2 px-3 py-1.5 bg-purple-500/10 text-purple-400 rounded-md font-medium text-sm hover:bg-purple-500/20 transition-colors"
+                            title="Asks AI to simulate the project execution and return the output."
+                            className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 text-green-400 rounded-md font-medium text-sm hover:bg-green-500/20 transition-colors"
                         >
-                            <BoltIcon className="w-4 h-4" />
-                            Run with AI
+                            <PlayIcon className="w-4 h-4" />
+                            Run
                         </button>
                         <div className="flex items-center">
                             {consoleOutput && consoleOutput.length > 0 && (
@@ -266,8 +266,8 @@ const ExecutionView: React.FC<{
                         ) : (
                             <div className="text-center text-text-tertiary pt-8 h-full flex flex-col items-center justify-center">
                                 <TerminalIcon className="w-12 h-12 text-text-tertiary/50 mb-4" />
-                                <p>Click "Run with AI" to ask Gemini to execute the project.</p>
-                                <p className="text-xs mt-1">The simulated output will appear here.</p>
+                                <p>Click "Run" to ask Gemini to simulate the project's execution.</p>
+                                <p className="text-xs mt-1">The output will appear here.</p>
                             </div>
                         )}
                     </div>
@@ -401,7 +401,7 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
                             <nav className="flex items-stretch px-2 border-b border-border bg-surface/50">
                                 <TabButton view="editor"><CodeBracketIcon className="w-4 h-4"/> Editor</TabButton>
                                 {projectType === 'web' && <TabButton view="preview" disabled={!isExecutable}><EyeIcon className="w-4 h-4"/> Preview</TabButton>}
-                                {(projectType === 'python' || projectType === 'node') && <TabButton view="preview" disabled={!isExecutable}><TerminalIcon className="w-4 h-4"/> Terminal</TabButton>}
+                                {(projectType === 'python' || projectType === 'node') && <TabButton view="preview" disabled={!isExecutable}><TerminalIcon className="w-4 h-4"/> Output</TabButton>}
                                 {projectType === 'web' && <TabButton view="console"><TerminalIcon className="w-4 h-4"/> Console</TabButton>}
                             </nav>
                             <main className="flex-1 bg-background overflow-auto">
