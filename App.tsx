@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatInput } from './components/ChatInput';
@@ -417,24 +418,31 @@ Please analyze the error and the code, explain the cause of the error, and provi
   }, [_sendMessage]);
 
   const handleAutoFixAllErrorsRequest = useCallback(() => {
-    if (!activeChat?.sandboxState || !activeChat.sandboxState.activeFile) return;
-    const { files, consoleOutput, activeFile } = activeChat.sandboxState;
-    const activeSandboxFile = files[activeFile];
-    if (!activeSandboxFile) return;
+    if (!activeChat?.sandboxState) return;
+    const { files, consoleOutput } = activeChat.sandboxState;
+    if (!files || Object.keys(files).length === 0) return;
 
     const errors = consoleOutput?.filter(line => line.type === 'error').map(line => line.message) || [];
     if (errors.length === 0) return;
 
     const errorText = errors.map((e, i) => `Error ${i+1}:\n${e}`).join('\n\n---\n');
+    
+    const filesText = Object.entries(files).map(([path, file]) => {
+        return `File: \`${path}\`
+\`\`\`${file.language || path.split('.').pop()}
+${file.code}
+\`\`\``;
+    }).join('\n\n');
+
     const prompt = `The following errors were detected in the console:
 ---
 ${errorText}
 ---
-Here is the code from file "${activeFile}" that produced them:
-\`\`\`${activeSandboxFile.language}
-${activeSandboxFile.code}
-\`\`\`
-Please analyze all errors and the code, explain the causes, and provide a single corrected version of the code by updating the "${activeFile}" file in the sandbox.`;
+Here are all the files in the current project sandbox:
+---
+${filesText}
+---
+Please analyze all errors in the context of the entire project, explain the causes, and provide corrected versions of any necessary files by using file system operations to update them in the sandbox.`;
     
     _sendMessage(prompt, [], false, true);
   }, [activeChat, _sendMessage]);
