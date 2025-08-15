@@ -1,4 +1,6 @@
 import { GoogleGenAI, Content, Part } from "@google/genai";
+import { ModelType } from '../types';
+import { unrestrainedSystemInstructionText } from './unrestrainedPrompt';
 
 const ai = new GoogleGenAI({apiKey: process.env.API_KEY!});
 
@@ -78,19 +80,23 @@ Before your main response, you MUST output your internal design and development 
 - **Legacy Code Generator**: You can still use markdown code blocks (\`\`\`jsx) for simple, single-component snippets. These will appear in the chat and have an "Open in Sandbox" button. Use the File System Sandbox for any multi-file or complete project requests.
 `;
 
-const systemInstruction = {
-    role: "model",
-    parts: [{ text: systemInstructionText }]
+const systemInstructions = {
+    'gemini': { role: "model", parts: [{ text: systemInstructionText }] },
+    'unrestrained': { role: "model", parts: [{ text: unrestrainedSystemInstructionText }] }
 };
+
 
 export async function* generateResponseStream(
     prompt: string, 
     history: Content[], 
     attachments: Part[], 
     signal: AbortSignal,
-    isSearchActive: boolean
+    isSearchActive: boolean,
+    modelType: ModelType
 ): AsyncGenerator<{ text: string, groundingMetadata?: any }, void, undefined> {
     const model = 'gemini-2.5-flash';
+    
+    const systemInstruction = systemInstructions[modelType] || systemInstructions['gemini'];
     
     const chat = ai.chats.create({
         model,

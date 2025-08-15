@@ -4,10 +4,10 @@ import { ChatInput } from './components/ChatInput';
 import { ChatMessage } from './components/ChatMessage';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { Header } from './components/Header';
-import { AIStatus, Message, Sender, Chat, MenuItem, SandboxFile } from './types';
+import { AIStatus, Message, Sender, Chat, MenuItem, SandboxFile, ModelType } from './types';
 import { Sandbox } from './components/PreviewPanel';
 import { generateResponseStream } from './services/geminiService';
-import type { Part } from '@google/genai';
+import type { Part, Content } from '@google/genai';
 import { ContextMenu } from './components/ContextMenu';
 import { BoltIcon, CopyIcon, PencilIcon, PlusIcon, RefreshIcon, ShareIcon, TrashIcon, XMarkIcon } from './components/icons';
 
@@ -18,6 +18,7 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
+  const [currentModel, setCurrentModel] = useState<ModelType>('gemini');
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -119,33 +120,37 @@ const App: React.FC = () => {
       timing: {},
     };
     
-    let tempActiveChatId = activeChatId;
-    const chatTitle = text.length > 30 ? text.substring(0, 27) + '...' : text || 'New Chat';
+    const tempActiveChatId = activeChatId || `chat-${Date.now()}`;
+    let history: Content[];
+    let modelForThisMessage: ModelType;
 
-    if (!tempActiveChatId) {
-        tempActiveChatId = `chat-${Date.now()}`;
+    if (!activeChatId) {
+        const chatTitle = text.length > 30 ? text.substring(0, 27) + '...' : text || 'New Chat';
         const newChat: Chat = {
             id: tempActiveChatId,
             title: isSystemMessage ? 'System Command' : chatTitle,
             messages: [userMessage, initialAIMessage],
+            model: currentModel,
         };
+        history = [];
+        modelForThisMessage = currentModel;
         setChats(prev => [newChat, ...prev]);
         setActiveChatId(tempActiveChatId);
     } else {
+        const currentChat = chats.find(c => c.id === activeChatId)!;
+        modelForThisMessage = currentChat.model || 'gemini';
+        history = currentChat.messages.map(msg => ({
+            role: msg.sender === Sender.User ? 'user' : 'model',
+            parts: [{ text: msg.text }]
+        }));
         setChats(prev => prev.map(chat => 
-            chat.id === tempActiveChatId 
+            chat.id === activeChatId 
                 ? { ...chat, messages: [...chat.messages, userMessage, initialAIMessage] } 
                 : chat
         ));
     }
     
     setCurrentAIStatus(AIStatus.Thinking);
-    
-    const currentChat = chats.find(c => c.id === tempActiveChatId) || { messages: [] };
-    const history = currentChat.messages.slice(0, -2).map(msg => ({
-        role: msg.sender === Sender.User ? 'user' : 'model',
-        parts: [{ text: msg.text }]
-    }));
     
     const geminiAttachments: Part[] = attachments.map(f => ({
       inlineData: { mimeType: f.type, data: f.base64Data }
@@ -165,7 +170,7 @@ const App: React.FC = () => {
     let timingResults: { [key: string]: number } = {};
 
     try {
-      const stream = generateResponseStream(promptJson, history, geminiAttachments, controller.signal, isSearchActive);
+      const stream = generateResponseStream(promptJson, history, geminiAttachments, controller.signal, isSearchActive, modelForThisMessage);
       
       let buffer = '';
       let reasoningData: any = null;
@@ -360,7 +365,7 @@ const App: React.FC = () => {
             return chat;
         }));
     }
-  }, [activeChatId, chats, handleStop, activeChat]);
+  }, [activeChatId, chats, handleStop, activeChat, currentModel]);
   
   const handleSendMessage = useCallback(async (text: string, files: File[], isSearchActive: boolean) => {
     const filePromises = files.map(file => {
@@ -586,6 +591,15 @@ Please analyze all errors and the code, explain the causes, and provide a single
   
   const messages = activeChat ? activeChat.messages : [];
 
+  const handleModelChange = (model: ModelType) => {
+    setCurrentModel(model);
+    if (activeChat) {
+      setChats(prev => prev.map(chat => 
+        chat.id === activeChatId ? { ...chat, model: model } : chat
+      ));
+    }
+  };
+
   return (
     <div onContextMenu={handleContextMenu} className="flex h-screen w-screen text-text-primary bg-background overflow-hidden">
       <Sidebar 
@@ -606,6 +620,10 @@ Please analyze all errors and the code, explain the causes, and provide a single
             onShare={() => handleShareChat()}
             hasActiveChat={!!activeChat}
             onMenuClick={() => setIsSidebarOpen(true)}
+            activeChatModel={activeChat?.model}
+            currentModel={currentModel}
+            onModelChange={handleModelChange}
+            isStreaming={currentAIStatus !== AIStatus.Idle && currentAIStatus !== AIStatus.Error}
           />
           <main className="flex-1 flex flex-col overflow-hidden">
             <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 md:p-6">

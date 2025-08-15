@@ -34,10 +34,13 @@ export interface Message {
   timing?: { [key: string]: number };
 }
 
+export type ModelType = 'gemini' | 'unrestrained';
+
 export interface Chat {
   id: string;
   title: string;
   messages: Message[];
+  model?: ModelType;
   sandboxState?: {
     files: { [path: string]: SandboxFile };
     openFiles: string[];

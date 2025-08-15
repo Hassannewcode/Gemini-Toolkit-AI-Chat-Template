@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Chat, SandboxFile } from '../types';
-import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, FolderIcon, FileIcon, ChevronRightIcon, ChevronDownIcon, PlusIcon, PencilIcon, TrashIcon, RefreshIcon, PythonIcon, JavaScriptIcon } from './icons';
+import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, FolderIcon, FileIcon, ChevronRightIcon, ChevronDownIcon, PlusIcon, RefreshIcon, TrashIcon } from './icons';
 
 type SandboxProps = {
   sandboxState: NonNullable<Chat['sandboxState']>;
@@ -9,7 +9,7 @@ type SandboxProps = {
   onAutoFixRequest: (error: string, code: string, language: string) => void;
 };
 
-type ActiveView = 'editor' | 'preview' | 'console';
+type ActiveView = 'editor' | 'preview' | 'terminal';
 type ProjectType = 'python' | 'node' | 'web' | 'unknown';
 
 // --- File Explorer ---
@@ -44,7 +44,6 @@ const FileExplorer: React.FC<{
     }, [files]);
     
     useEffect(() => {
-        // Automatically open the folder of the active file
         if (activeFile) {
             const pathParts = activeFile.split('/');
             if (pathParts.length > 1) {
@@ -127,306 +126,255 @@ const FileExplorer: React.FC<{
     );
 };
 
-// --- ExecutionView Component ---
-const ExecutionView: React.FC<{
-    files: { [path: string]: SandboxFile },
-    projectType: ProjectType,
-    consoleOutput?: { type: string; message: string }[],
-    onUpdate: SandboxProps['onUpdate']
-}> = ({ files, projectType, consoleOutput, onUpdate }) => {
+const resolvePath = (base: string, relative: string): string => {
+    const stack = base.split('/').filter(i => i);
+    relative.split('/').forEach(part => {
+        if (part === '.' || part === '') return;
+        if (part === '..') {
+            stack.pop();
+        } else {
+            stack.push(part);
+        }
+    });
+    return stack.join('/');
+};
+
+const consoleInterceptor = `
+    const formatArg = (arg) => {
+        if (arg instanceof Error) { return \`Error: \${arg.message}\\n\${arg.stack}\`; }
+        if (typeof arg === 'object' && arg !== null) { try { return JSON.stringify(arg, null, 2); } catch (e) { return String(arg); } }
+        return String(arg);
+    };
+    const postMsg = (type, args) => {
+        const payload = args.map(formatArg).join(' ');
+        window.parent.postMessage({ source: 'preview-iframe', type, payload }, '*');
+    };
+    ['log', 'warn', 'error'].forEach(type => {
+        const original = console[type];
+        console[type] = (...args) => { postMsg(type, args); original.apply(console, args); };
+    });
+    window.addEventListener('error', e => postMsg('error', [e.message]));
+    window.addEventListener('unhandledrejection', e => postMsg('error', ['Unhandled Promise Rejection:', e.reason]));
+`;
+
+// --- PreviewView Component for Web Projects ---
+const PreviewView: React.FC<{
+    files: { [path: string]: SandboxFile };
+    onUpdate: SandboxProps['onUpdate'];
+}> = ({ files, onUpdate }) => {
     const [srcDoc, setSrcDoc] = useState('');
     const [refreshKey, setRefreshKey] = useState(0);
-    const [isPyodideLoading, setIsPyodideLoading] = useState(false);
-    const [isPyodideReady, setIsPyodideReady] = useState(false);
-    const pyodideRef = useRef<any>(null);
-    const [isRunning, setIsRunning] = useState(false);
-    const workerRef = useRef<Worker | null>(null);
-    
-    // Pyodide initialization
-    useEffect(() => {
-        if (projectType !== 'python' || isPyodideReady || isPyodideLoading) return;
 
-        async function initPyodide() {
-            setIsPyodideLoading(true);
-            try {
-                // `loadPyodide` is global from the script tag in index.html
-                pyodideRef.current = await (window as any).loadPyodide();
-                setIsPyodideReady(true);
-            } catch (error) {
-                console.error("Failed to load Pyodide", error);
-                onUpdate(prev => ({
-                    ...prev!,
-                    consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: `Failed to load Python runtime: ${error}` }]
-                }));
-            } finally {
-                setIsPyodideLoading(false);
-            }
-        }
-        initPyodide();
-    }, [projectType, isPyodideReady, isPyodideLoading, onUpdate]);
-    
-    // Worker cleanup
-    useEffect(() => {
-        return () => {
-            if (workerRef.current) {
-                workerRef.current.terminate();
-                workerRef.current = null;
-            }
-        };
-    }, []);
-    
-    const handleRun = async () => {
-        setIsRunning(true);
-        // Clear console before run
-        onUpdate(p => ({ ...p!, consoleOutput: [] }));
-
-        if (projectType === 'python') {
-            const pyodide = pyodideRef.current;
-            if (!pyodide) {
-                 setIsRunning(false);
-                 return;
-            }
-
-            pyodide.setStdout({ batched: (msg: string) => onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'log', message: msg }] })) });
-            pyodide.setStderr({ batched: (msg: string) => onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: msg }] })) });
-
-            try {
-                for (const path in files) {
-                    if (path.includes('/')) {
-                        const dir = path.substring(0, path.lastIndexOf('/'));
-                        pyodide.FS.mkdirTree(dir);
-                    }
-                    pyodide.FS.writeFile(path, files[path].code);
+    const buildSrcDoc = useCallback((processedHtml: string) => {
+        const headTag = /<head[^>]*>/i.exec(processedHtml);
+        if (headTag) {
+            const injectionPoint = headTag.index + headTag[0].length;
+            const interceptorScript = `
+                <script type="importmap">
+                {
+                  "imports": {
+                    "react": "https://esm.sh/react@18.2.0",
+                    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client"
+                  }
                 }
-
-                const entryPoint = ['main.py', 'app.py'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.py'));
-                
-                if (entryPoint) {
-                    const code = files[entryPoint].code;
-                    onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${entryPoint}...` }] }));
-                    await pyodide.runPythonAsync(code);
-                } else {
-                     throw new Error("No Python entry point found (e.g., main.py).");
-                }
-            } catch (e: any) {
-                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] }));
-            }
-        } else if (projectType === 'node') {
-            if (workerRef.current) workerRef.current.terminate();
-            
-            const workerCode = `
-                self.console = {
-                    log: (...args) => self.postMessage({ type: 'log', message: args.join(' ') }),
-                    error: (...args) => self.postMessage({ type: 'error', message: args.join(' ') }),
-                    warn: (...args) => self.postMessage({ type: 'warn', message: args.join(' ') }),
-                };
-                self.onmessage = (e) => {
-                    try {
-                        eval(e.data);
-                    } catch (err) {
-                        self.postMessage({ type: 'error', message: err.message });
-                    } finally {
-                        self.postMessage({ type: 'done' });
-                    }
-                };
+                </script>
+                <script>${consoleInterceptor}</script>
             `;
-            const blob = new Blob([workerCode], { type: 'application/javascript' });
-            workerRef.current = new Worker(URL.createObjectURL(blob));
-
-            workerRef.current.onmessage = (e) => {
-                if (e.data.type === 'done') {
-                    setIsRunning(false);
-                    if (workerRef.current) { workerRef.current.terminate(); workerRef.current = null; }
-                } else {
-                    onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: e.data.type, message: e.data.message }] }));
-                }
-            };
-            
-            workerRef.current.onerror = (e) => {
-                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] }));
-                 setIsRunning(false);
-            };
-
-            const entryPoint = ['index.js', 'main.js', 'app.js'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.js'));
-            if (entryPoint) {
-                onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${entryPoint}...` }] }));
-                workerRef.current.postMessage(files[entryPoint].code);
-            } else {
-                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: 'No JS entry point found (e.g., index.js).' }] }));
-                 setIsRunning(false);
-            }
+            return processedHtml.slice(0, injectionPoint) + interceptorScript + processedHtml.slice(injectionPoint);
         }
-        if (projectType !== 'node') setIsRunning(false); // Node worker sets this itself
-    };
-    
-    const consoleInterceptor = `
-        const formatArg = (arg) => {
-            if (arg instanceof Error) { return \`Error: \${arg.message}\\n\${arg.stack}\`; }
-            if (typeof arg === 'object' && arg !== null) { try { return JSON.stringify(arg, null, 2); } catch (e) { return String(arg); } }
-            return String(arg);
-        };
-        const postMsg = (type, args) => {
-            const payload = args.map(formatArg).join(' ');
-            window.parent.postMessage({ source: 'preview-iframe', type, payload }, '*');
-        };
-        ['log', 'warn', 'error'].forEach(type => {
-            const original = console[type];
-            console[type] = (...args) => { postMsg(type, args); original.apply(console, args); };
-        });
-        window.addEventListener('error', e => postMsg('error', [e.message]));
-        window.addEventListener('unhandledrejection', e => postMsg('error', ['Unhandled Promise Rejection:', e.reason]));
-    `;
-    
-    const buildSrcDoc = useCallback((htmlCode: string, cssCode: string, jsCode: string) => {
-        return `
+         return `
             <!DOCTYPE html>
             <html>
                 <head>
-                    <style>${cssCode}</style>
-                    <style>body { font-family: sans-serif; margin: 0; background-color: white; color: black; }</style>
-                    <script type="importmap">
-                    {
-                      "imports": {
-                        "react": "https://esm.sh/react@18.2.0",
-                        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client"
-                      }
-                    }
-                    </script>
+                    <script type="importmap">{ "imports": { "react": "https://esm.sh/react@18.2.0", "react-dom/client": "https://esm.sh/react-dom@18.2.0/client" }}</script>
+                    <script>${consoleInterceptor}</script>
                 </head>
-                <body>
-                    ${htmlCode.includes('<div id="root"></div>') ? htmlCode : `<div id="root"></div>${htmlCode}`}
-                    <script type="module">
-                        (function() { ${consoleInterceptor}; ${jsCode}; })();
-                    </script>
-                </body>
+                <body>${processedHtml}</body>
             </html>`;
-    }, [consoleInterceptor]);
+    }, []);
 
     useEffect(() => {
-        if (projectType !== 'web') return;
-
         const handler = setTimeout(() => {
-            const htmlFiles = Object.entries(files).filter(([, file]) => file.language === 'html');
-            const cssFiles = Object.entries(files).filter(([, file]) => file.language === 'css');
-            const jsFiles = Object.entries(files).filter(([, file]) => ['javascript', 'jsx'].includes(file.language));
-
-            jsFiles.sort(([pathA], [pathB]) => {
-                const isIndexA = /index\.(js|jsx)$/.test(pathA);
-                const isIndexB = /index\.(js|jsx)$/.test(pathB);
-                if (isIndexA && !isIndexB) return 1;
-                if (!isIndexA && isIndexB) return -1;
-                return pathA.localeCompare(pathB);
-            });
-            
-            let htmlCode = '<div id="root"></div>';
-            const indexHtmlFile = htmlFiles.find(([path]) => path === 'index.html') || htmlFiles[0];
-            if (indexHtmlFile) {
-                htmlCode = indexHtmlFile[1].code;
+            const indexHtmlFile = Object.entries(files).find(([path]) => path === 'index.html' || path.endsWith('.html'));
+            if (!indexHtmlFile) {
+                setSrcDoc('<html><body><div style="font-family: sans-serif; padding: 2rem;"><h1>No HTML file found</h1><p>Create an index.html file to see a preview.</p></div></body></html>');
+                return;
             }
 
-            const cssCode = cssFiles.map(([, file]) => file.code).join('\n\n');
-            const jsCode = jsFiles.map(([, file]) => file.code).join('\n\n');
+            let htmlContent = indexHtmlFile[1].code;
+            const basePath = indexHtmlFile[0].includes('/') ? indexHtmlFile[0].substring(0, indexHtmlFile[0].lastIndexOf('/')) : '';
+
+            htmlContent = htmlContent.replace(/<link(?=.*\shref="([^"]+?)")[^>]*>/g, (match, href) => {
+                if (!href || !href.endsWith('.css') || href.startsWith('http')) return match;
+                const cssPath = resolvePath(basePath, href);
+                const cssFile = files[cssPath];
+                return cssFile ? `<style>${cssFile.code}</style>` : `<!-- Link to ${href} (not found at ${cssPath}) -->`;
+            });
             
-            const finalSrcDoc = buildSrcDoc(htmlCode, cssCode, jsCode);
+            htmlContent = htmlContent.replace(/<script(?=.*\ssrc="([^"]+?)")[^>]*><\/script>/g, (match, src) => {
+                if (!src || src.startsWith('http')) return match;
+                const jsPath = resolvePath(basePath, src);
+                const jsFile = files[jsPath];
+                const typeModule = match.includes('type="module"');
+                return jsFile ? `<script${typeModule ? ' type="module"' : ''}>${jsFile.code}</script>` : `<!-- Script src ${src} (not found at ${jsPath}) -->`;
+            });
 
-            setSrcDoc(finalSrcDoc);
+            setSrcDoc(buildSrcDoc(htmlContent));
         }, 250);
-        return () => clearTimeout(handler);
-    }, [files, buildSrcDoc, refreshKey, projectType]);
 
+        return () => clearTimeout(handler);
+    }, [files, buildSrcDoc, refreshKey]);
 
     useEffect(() => {
         const handleIframeMessages = (event: MessageEvent) => {
             if (event.data?.source === 'preview-iframe') {
-                onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: event.data.type, message: `[PREVIEW] ${event.data.payload}` }] }));
+                onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: event.data.type, message: event.data.payload }] }));
             }
         };
         window.addEventListener('message', handleIframeMessages);
         return () => window.removeEventListener('message', handleIframeMessages);
     }, [onUpdate]);
 
+    return (
+        <div className="w-full h-full flex flex-col bg-background">
+            <div className="flex items-center p-1.5 border-b border-border flex-shrink-0">
+                <div className="flex-grow" />
+                <button onClick={() => setRefreshKey(k => k + 1)} title="Refresh Preview" className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors">
+                    <RefreshIcon className="w-5 h-5" />
+                </button>
+            </div>
+            <div className="flex-1 bg-black/20 p-4">
+                <iframe key={refreshKey} srcDoc={srcDoc} title="Preview" sandbox="allow-scripts allow-modals allow-same-origin" className="w-full h-full border-0 bg-white rounded-md shadow-lg" />
+            </div>
+        </div>
+    );
+};
 
-    switch (projectType) {
-        case 'python':
-        case 'node':
-            const isLoading = projectType === 'python' && isPyodideLoading;
-            const buttonDisabled = (projectType === 'python' && (!isPyodideReady || isRunning)) || (projectType === 'node' && isRunning);
-            let buttonText = 'Run';
-            if (isLoading) buttonText = 'Loading Python...';
-            else if (isRunning) buttonText = 'Running...';
-            
-            return (
-                <div className="w-full h-full flex flex-col bg-background">
-                    <div className="flex items-center justify-between p-1.5 border-b border-border flex-shrink-0">
-                        <button
-                            onClick={handleRun}
-                            disabled={buttonDisabled}
-                            title="Run the project code in a sandboxed environment."
-                            className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 text-green-400 rounded-md font-medium text-sm hover:bg-green-500/20 transition-colors disabled:opacity-50 disabled:cursor-wait"
-                        >
-                            {isLoading || isRunning ? <RefreshIcon className="w-4 h-4 animate-spin"/> : <PlayIcon className="w-4 h-4" />}
-                            {buttonText}
-                        </button>
-                        <div className="flex items-center">
-                            {consoleOutput && consoleOutput.length > 0 && (
-                                <button
-                                    onClick={() => onUpdate(p => ({ ...p!, consoleOutput: [] }))}
-                                    title="Clear Console"
-                                    className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors"
-                                >
-                                    <TrashIcon className="w-4 h-4" />
+// --- TerminalView Component for Python/Node execution and console output ---
+const TerminalView: React.FC<{
+    files: { [path: string]: SandboxFile };
+    projectType: ProjectType;
+    consoleOutput?: { type: string; message: string }[];
+    onUpdate: SandboxProps['onUpdate'];
+    onAutoFixRequest: SandboxProps['onAutoFixRequest'];
+}> = ({ files, projectType, consoleOutput, onUpdate, onAutoFixRequest }) => {
+    const [isPyodideLoading, setIsPyodideLoading] = useState(false);
+    const [isPyodideReady, setIsPyodideReady] = useState(false);
+    const pyodideRef = useRef<any>(null);
+    const [isRunning, setIsRunning] = useState(false);
+    const workerRef = useRef<Worker | null>(null);
+    const activeFile = Object.keys(files)[0]; // For auto-fix context
+
+    useEffect(() => {
+        if (projectType !== 'python' || isPyodideReady || isPyodideLoading) return;
+        async function initPyodide() {
+            setIsPyodideLoading(true);
+            try {
+                pyodideRef.current = await (window as any).loadPyodide();
+                setIsPyodideReady(true);
+            } catch (error) {
+                console.error("Failed to load Pyodide", error);
+                onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: `Failed to load Python runtime: ${error}` }] }));
+            } finally {
+                setIsPyodideLoading(false);
+            }
+        }
+        initPyodide();
+    }, [projectType, isPyodideReady, isPyodideLoading, onUpdate]);
+
+    useEffect(() => {
+        return () => { if (workerRef.current) workerRef.current.terminate(); };
+    }, []);
+
+    const handleRun = async () => {
+        setIsRunning(true);
+        onUpdate(p => ({ ...p!, consoleOutput: [] }));
+
+        if (projectType === 'python') {
+            if (!pyodideRef.current) { setIsRunning(false); return; }
+            pyodideRef.current.setStdout({ batched: (msg: string) => onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'log', message: msg }] })) });
+            pyodideRef.current.setStderr({ batched: (msg: string) => onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: msg }] })) });
+
+            try {
+                for (const path in files) {
+                    if (path.includes('/')) pyodideRef.current.FS.mkdirTree(path.substring(0, path.lastIndexOf('/')));
+                    pyodideRef.current.FS.writeFile(path, files[path].code);
+                }
+                const entryPoint = ['main.py', 'app.py'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.py'));
+                if (entryPoint) {
+                    onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${entryPoint}...` }] }));
+                    await pyodideRef.current.runPythonAsync(files[entryPoint].code);
+                } else throw new Error("No Python entry point found (e.g., main.py).");
+            } catch (e: any) {
+                onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] }));
+            }
+        } else if (projectType === 'node') {
+            if (workerRef.current) workerRef.current.terminate();
+            const workerCode = `self.console={log:(...a)=>self.postMessage({t:'log',m:a.join(' ')}),error:(...a)=>self.postMessage({t:'error',m:a.join(' ')}),warn:(...a)=>self.postMessage({t:'warn',m:a.join(' ')})};self.onmessage=e=>{try{eval(e.data)}catch(r){self.postMessage({t:'error',m:r.message})}finally{self.postMessage({t:'done'})}};`;
+            workerRef.current = new Worker(URL.createObjectURL(new Blob([workerCode])));
+            workerRef.current.onmessage = (e) => {
+                if (e.data.t === 'done') {
+                    setIsRunning(false);
+                    if (workerRef.current) { workerRef.current.terminate(); workerRef.current = null; }
+                } else {
+                    onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: e.data.t, message: e.data.m }] }));
+                }
+            };
+            workerRef.current.onerror = (e) => { onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] })); setIsRunning(false); };
+            const entryPoint = ['index.js', 'main.js', 'app.js'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.js'));
+            if (entryPoint) {
+                onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${entryPoint}...` }] }));
+                workerRef.current.postMessage(files[entryPoint].code);
+            } else {
+                onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: 'No JS entry point found (e.g., index.js).' }] }));
+                setIsRunning(false);
+            }
+        }
+        if (projectType !== 'node') setIsRunning(false);
+    };
+
+    const isRunnable = projectType === 'python' || projectType === 'node';
+    const isLoading = projectType === 'python' && isPyodideLoading;
+    const buttonDisabled = (projectType === 'python' && !isPyodideReady) || isRunning;
+    
+    return (
+        <div data-context-menu-id="preview-console" className="w-full h-full flex flex-col bg-background">
+            {isRunnable && (
+                <div className="flex items-center justify-between p-1.5 border-b border-border flex-shrink-0">
+                    <button onClick={handleRun} disabled={buttonDisabled} className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 text-green-400 rounded-md font-medium text-sm hover:bg-green-500/20 transition-colors disabled:opacity-50 disabled:cursor-wait">
+                        {isLoading || isRunning ? <RefreshIcon className="w-4 h-4 animate-spin"/> : <PlayIcon className="w-4 h-4" />}
+                        {isLoading ? 'Loading Python...' : isRunning ? 'Running...' : 'Run Code'}
+                    </button>
+                    {consoleOutput && consoleOutput.length > 0 && (
+                        <button onClick={() => onUpdate(p => ({ ...p!, consoleOutput: [] }))} title="Clear Console" className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary"><TrashIcon className="w-4 h-4" /></button>
+                    )}
+                </div>
+            )}
+            <div className="flex-1 bg-black/20 p-4 font-mono text-sm text-text-secondary overflow-y-auto">
+                {consoleOutput && consoleOutput.length > 0 ? (
+                    consoleOutput.map((line, index) => (
+                        <div key={index} className="group flex items-start gap-2 justify-between hover:bg-surface/50 -mx-4 px-4 py-0.5 rounded-md">
+                            <pre className={`whitespace-pre-wrap flex-1 ${line.type === 'error' ? 'text-red-400' : line.type === 'info' ? 'text-blue-300' : ''}`}>
+                                <span className="select-none text-text-tertiary mr-3">{'>'}</span>{line.message}
+                            </pre>
+                            {line.type === 'error' && activeFile && files[activeFile] && (
+                                <button onClick={() => onAutoFixRequest(line.message, files[activeFile]!.code, files[activeFile]!.language)} className="flex items-center gap-1.5 text-xs text-yellow-400/70 border border-yellow-400/20 bg-yellow-400/10 rounded-md px-2 py-1 ml-4 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-yellow-400/20 hover:text-yellow-300" title="Ask AI to fix this error">
+                                    <BoltIcon className="w-3 h-3" /> Auto-Fix
                                 </button>
                             )}
                         </div>
+                    ))
+                ) : (
+                    <div className="text-center text-text-tertiary pt-8 h-full flex flex-col items-center justify-center">
+                        <TerminalIcon className="w-12 h-12 text-text-tertiary/50 mb-4" />
+                        {isRunnable ? <p>Click "Run Code" to execute the project.</p> : <p>Console output from the web preview will appear here.</p>}
                     </div>
-                    <div className="flex-1 bg-black/20 p-4 font-mono text-sm text-text-secondary overflow-y-auto">
-                        {consoleOutput && consoleOutput.length > 0 ? (
-                            consoleOutput.map((line, index) => (
-                                <div key={index} className="flex items-start">
-                                    <span className="select-none text-text-tertiary mr-3">{'>'}</span>
-                                    <pre className={`whitespace-pre-wrap flex-1 ${line.type === 'error' ? 'text-red-400' : line.type === 'info' ? 'text-blue-300' : ''}`}>
-                                        {line.message}
-                                    </pre>
-                                </div>
-                            ))
-                        ) : (
-                            <div className="text-center text-text-tertiary pt-8 h-full flex flex-col items-center justify-center">
-                                <TerminalIcon className="w-12 h-12 text-text-tertiary/50 mb-4" />
-                                <p>Click "Run" to execute the project.</p>
-                                <p className="text-xs mt-1">Output will appear here.</p>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            );
-        
-        case 'web':
-            return (
-                 <div className="w-full h-full flex flex-col bg-background">
-                     <div className="flex items-center p-1.5 border-b border-border flex-shrink-0">
-                        <div className="flex-grow" />
-                        <button onClick={() => setRefreshKey(k => k + 1)} className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors"><RefreshIcon className="w-5 h-5" /></button>
-                    </div>
-                    <div className="flex-1 bg-black/20 p-4">
-                        <iframe key={refreshKey} srcDoc={srcDoc} title="Preview" sandbox="allow-scripts allow-modals allow-same-origin" className="w-full h-full border-0 bg-white rounded-md shadow-lg" />
-                    </div>
-                </div>
-            );
-        
-        default: // 'unknown'
-            return (
-                <div className="flex flex-col items-center justify-center h-full text-center text-text-secondary p-4">
-                    <CodeBracketIcon className="w-16 h-16 mb-4 opacity-20"/>
-                    <h3 className="text-lg font-semibold text-text-primary mb-2">
-                        No Preview Available
-                    </h3>
-                    <p className="text-sm text-text-tertiary max-w-xs">
-                        Could not determine project type. Make sure you have an entry file like 'index.html', 'main.py', or 'index.js'.
-                    </p>
-                </div>
-            );
-    }
+                )}
+            </div>
+        </div>
+    );
 };
+
 
 // --- Main Sandbox ---
 export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdate, onAutoFixRequest }) => {
@@ -442,22 +390,28 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
         return 'unknown';
     }, [files]);
     
-    // Set a sensible default view when the sandbox loads or project type changes
+    const isRunnable = projectType === 'python' || projectType === 'node';
+    const isWebViewable = projectType === 'web';
+
     useEffect(() => {
-        if (projectType === 'web') {
+        if (activeView === 'preview' && !isWebViewable) setActiveView('editor');
+        if (activeView === 'terminal' && !isWebViewable && !isRunnable) setActiveView('editor');
+    }, [projectType, activeView, isWebViewable, isRunnable]);
+    
+    useEffect(() => {
+        if (projectType === 'web' && activeView !== 'editor') {
             setActiveView('preview');
-        } else if (projectType === 'python' || projectType === 'node') {
-            setActiveView('editor'); // Default to editor, user can switch to terminal
+        } else if (isRunnable && activeView !== 'editor') {
+            setActiveView('terminal');
         } else {
             setActiveView('editor');
         }
-    }, [projectType]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [projectType, activeFile]);
+
 
     const handleSelectFile = (path: string) => {
-        onUpdate(prev => {
-            const newOpenFiles = prev!.openFiles.includes(path) ? prev!.openFiles : [...prev!.openFiles, path];
-            return { ...prev!, activeFile: path, openFiles: newOpenFiles };
-        });
+        onUpdate(prev => ({ ...prev!, activeFile: path, openFiles: prev!.openFiles.includes(path) ? prev!.openFiles : [...prev!.openFiles, path] }));
         setActiveView('editor');
     };
 
@@ -476,10 +430,7 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
 
     const handleCodeChange = (newCode: string) => {
         if (activeFile) {
-            onUpdate(prev => ({
-                ...prev!,
-                files: { ...prev!.files, [activeFile]: { ...prev!.files[activeFile], code: newCode } }
-            }));
+            onUpdate(prev => ({ ...prev!, files: { ...prev!.files, [activeFile]: { ...prev!.files[activeFile], code: newCode } } }));
         }
     };
 
@@ -488,12 +439,6 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
           {children}
         </button>
     );
-    
-    const isExecutable = useMemo(() => {
-        if (!files) return false;
-        return Object.keys(files).length > 0;
-    }, [files]);
-
 
     return (
         <div className="flex w-full h-full bg-background border-l border-border">
@@ -506,7 +451,6 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
                     </button>
                 </header>
                 
-                {/* Editor Tabs */}
                 <div className="flex items-end border-b border-border bg-surface/30 h-10 overflow-x-auto flex-shrink-0">
                     {openFiles.map(path => (
                         <button key={path} onClick={() => handleSelectFile(path)} className={`flex items-center gap-2 pl-4 pr-2 h-full text-sm border-r border-border transition-colors ${activeFile === path ? 'bg-background text-text-primary' : 'text-text-secondary hover:bg-surface'}`}>
@@ -521,42 +465,24 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
                         <>
                             <nav className="flex items-stretch px-2 border-b border-border bg-surface/50">
                                 <TabButton view="editor"><CodeBracketIcon className="w-4 h-4"/> Editor</TabButton>
-                                {projectType === 'web' && <TabButton view="preview" disabled={!isExecutable}><EyeIcon className="w-4 h-4"/> Preview</TabButton>}
-                                {(projectType === 'python' || projectType === 'node') && <TabButton view="preview" disabled={!isExecutable}><TerminalIcon className="w-4 h-4"/> Output</TabButton>}
-                                {projectType === 'web' && <TabButton view="console"><TerminalIcon className="w-4 h-4"/> Console</TabButton>}
+                                {isWebViewable && <TabButton view="preview"><EyeIcon className="w-4 h-4"/> Preview</TabButton>}
+                                {(isWebViewable || isRunnable) && <TabButton view="terminal"><TerminalIcon className="w-4 h-4"/> Terminal</TabButton>}
                             </nav>
                             <main className="flex-1 bg-background overflow-auto">
                                 {activeView === 'editor' && (
                                     <textarea value={files[activeFile]?.code || ''} onChange={(e) => handleCodeChange(e.target.value)} className="w-full h-full bg-transparent text-text-primary p-4 resize-none font-mono text-sm leading-6 focus:outline-none" spellCheck="false"/>
                                 )}
-                                {activeView === 'preview' && isExecutable && (
-                                    <ExecutionView 
-                                        files={files} 
-                                        projectType={projectType}
-                                        consoleOutput={consoleOutput}
-                                        onUpdate={onUpdate}
-                                    />
+                                {activeView === 'preview' && isWebViewable && (
+                                    <PreviewView files={files} onUpdate={onUpdate}/>
                                 )}
-                                {activeView === 'console' && projectType === 'web' && (
-                                     <div data-context-menu-id="preview-console" className="w-full h-full p-4 font-mono text-xs text-text-secondary overflow-y-auto">
-                                        {consoleOutput && consoleOutput.map((line, index) => (
-                                            <div key={index} className="group flex items-start gap-2 justify-between hover:bg-surface/50 -mx-4 px-4 py-0.5 rounded-md">
-                                              <pre className={`whitespace-pre-wrap flex-1 ${line.type === 'error' ? 'text-red-400' : line.type === 'info' ? 'text-blue-300' : ''}`}>
-                                                  <span className="select-none text-text-tertiary mr-2">{'>'}</span>{line.message}
-                                              </pre>
-                                              {line.type === 'error' && activeFile && files[activeFile] && (
-                                                  <button
-                                                      onClick={() => onAutoFixRequest(line.message, files[activeFile]!.code, files[activeFile]!.language)}
-                                                      className="flex items-center gap-1.5 text-xs text-yellow-400/70 border border-yellow-400/20 bg-yellow-400/10 rounded-md px-2 py-1 ml-4 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-yellow-400/20 hover:text-yellow-300"
-                                                      title="Ask AI to fix this error"
-                                                  >
-                                                      <BoltIcon className="w-3 h-3" />
-                                                      Auto-Fix
-                                                  </button>
-                                              )}
-                                            </div>
-                                        ))}
-                                    </div>
+                                {activeView === 'terminal' && (isWebViewable || isRunnable) && (
+                                    <TerminalView 
+                                        files={files} 
+                                        projectType={projectType} 
+                                        consoleOutput={consoleOutput} 
+                                        onUpdate={onUpdate}
+                                        onAutoFixRequest={onAutoFixRequest} 
+                                    />
                                 )}
                             </main>
                         </>
