@@ -7,7 +7,6 @@ type SandboxProps = {
   onClose: () => void;
   onUpdate: (updater: (prevState: Chat['sandboxState']) => Chat['sandboxState']) => void;
   onAutoFixRequest: (error: string, code: string, language: string) => void;
-  onExecuteRequest: (language: string) => void;
 };
 
 type ActiveView = 'editor' | 'preview' | 'console';
@@ -129,16 +128,136 @@ const FileExplorer: React.FC<{
 };
 
 // --- ExecutionView Component ---
-const ExecutionView: React.FC<{ 
-    files: { [path: string]: SandboxFile }, 
-    onConsoleUpdate: (line: { type: string, message: string }) => void,
-    onExecute: (language: string) => void;
+const ExecutionView: React.FC<{
+    files: { [path: string]: SandboxFile },
     projectType: ProjectType,
-    consoleOutput?: { type: string; message: string }[];
-    onClearConsole: () => void;
-}> = ({ files, onConsoleUpdate, onExecute, projectType, consoleOutput, onClearConsole }) => {
+    consoleOutput?: { type: string; message: string }[],
+    onUpdate: SandboxProps['onUpdate']
+}> = ({ files, projectType, consoleOutput, onUpdate }) => {
     const [srcDoc, setSrcDoc] = useState('');
     const [refreshKey, setRefreshKey] = useState(0);
+    const [isPyodideLoading, setIsPyodideLoading] = useState(false);
+    const [isPyodideReady, setIsPyodideReady] = useState(false);
+    const pyodideRef = useRef<any>(null);
+    const [isRunning, setIsRunning] = useState(false);
+    const workerRef = useRef<Worker | null>(null);
+    
+    // Pyodide initialization
+    useEffect(() => {
+        if (projectType !== 'python' || isPyodideReady || isPyodideLoading) return;
+
+        async function initPyodide() {
+            setIsPyodideLoading(true);
+            try {
+                // `loadPyodide` is global from the script tag in index.html
+                pyodideRef.current = await (window as any).loadPyodide();
+                setIsPyodideReady(true);
+            } catch (error) {
+                console.error("Failed to load Pyodide", error);
+                onUpdate(prev => ({
+                    ...prev!,
+                    consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: `Failed to load Python runtime: ${error}` }]
+                }));
+            } finally {
+                setIsPyodideLoading(false);
+            }
+        }
+        initPyodide();
+    }, [projectType, isPyodideReady, isPyodideLoading, onUpdate]);
+    
+    // Worker cleanup
+    useEffect(() => {
+        return () => {
+            if (workerRef.current) {
+                workerRef.current.terminate();
+                workerRef.current = null;
+            }
+        };
+    }, []);
+    
+    const handleRun = async () => {
+        setIsRunning(true);
+        // Clear console before run
+        onUpdate(p => ({ ...p!, consoleOutput: [] }));
+
+        if (projectType === 'python') {
+            const pyodide = pyodideRef.current;
+            if (!pyodide) {
+                 setIsRunning(false);
+                 return;
+            }
+
+            pyodide.setStdout({ batched: (msg: string) => onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'log', message: msg }] })) });
+            pyodide.setStderr({ batched: (msg: string) => onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: msg }] })) });
+
+            try {
+                for (const path in files) {
+                    if (path.includes('/')) {
+                        const dir = path.substring(0, path.lastIndexOf('/'));
+                        pyodide.FS.mkdirTree(dir);
+                    }
+                    pyodide.FS.writeFile(path, files[path].code);
+                }
+
+                const entryPoint = ['main.py', 'app.py'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.py'));
+                
+                if (entryPoint) {
+                    const code = files[entryPoint].code;
+                    onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${entryPoint}...` }] }));
+                    await pyodide.runPythonAsync(code);
+                } else {
+                     throw new Error("No Python entry point found (e.g., main.py).");
+                }
+            } catch (e: any) {
+                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] }));
+            }
+        } else if (projectType === 'node') {
+            if (workerRef.current) workerRef.current.terminate();
+            
+            const workerCode = `
+                self.console = {
+                    log: (...args) => self.postMessage({ type: 'log', message: args.join(' ') }),
+                    error: (...args) => self.postMessage({ type: 'error', message: args.join(' ') }),
+                    warn: (...args) => self.postMessage({ type: 'warn', message: args.join(' ') }),
+                };
+                self.onmessage = (e) => {
+                    try {
+                        eval(e.data);
+                    } catch (err) {
+                        self.postMessage({ type: 'error', message: err.message });
+                    } finally {
+                        self.postMessage({ type: 'done' });
+                    }
+                };
+            `;
+            const blob = new Blob([workerCode], { type: 'application/javascript' });
+            workerRef.current = new Worker(URL.createObjectURL(blob));
+
+            workerRef.current.onmessage = (e) => {
+                if (e.data.type === 'done') {
+                    setIsRunning(false);
+                    if (workerRef.current) { workerRef.current.terminate(); workerRef.current = null; }
+                } else {
+                    onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: e.data.type, message: e.data.message }] }));
+                }
+            };
+            
+            workerRef.current.onerror = (e) => {
+                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] }));
+                 setIsRunning(false);
+            };
+
+            const entryPoint = ['index.js', 'main.js', 'app.js'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.js'));
+            if (entryPoint) {
+                onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${entryPoint}...` }] }));
+                workerRef.current.postMessage(files[entryPoint].code);
+            } else {
+                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: 'No JS entry point found (e.g., index.js).' }] }));
+                 setIsRunning(false);
+            }
+        }
+        if (projectType !== 'node') setIsRunning(false); // Node worker sets this itself
+    };
     
     const consoleInterceptor = `
         const formatArg = (arg) => {
@@ -219,32 +338,39 @@ const ExecutionView: React.FC<{
     useEffect(() => {
         const handleIframeMessages = (event: MessageEvent) => {
             if (event.data?.source === 'preview-iframe') {
-                onConsoleUpdate({ type: event.data.type, message: `[PREVIEW] ${event.data.payload}` });
+                onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: event.data.type, message: `[PREVIEW] ${event.data.payload}` }] }));
             }
         };
         window.addEventListener('message', handleIframeMessages);
         return () => window.removeEventListener('message', handleIframeMessages);
-    }, [onConsoleUpdate]);
+    }, [onUpdate]);
 
 
     switch (projectType) {
         case 'python':
         case 'node':
+            const isLoading = projectType === 'python' && isPyodideLoading;
+            const buttonDisabled = (projectType === 'python' && (!isPyodideReady || isRunning)) || (projectType === 'node' && isRunning);
+            let buttonText = 'Run';
+            if (isLoading) buttonText = 'Loading Python...';
+            else if (isRunning) buttonText = 'Running...';
+            
             return (
                 <div className="w-full h-full flex flex-col bg-background">
                     <div className="flex items-center justify-between p-1.5 border-b border-border flex-shrink-0">
                         <button
-                            onClick={() => onExecute(projectType)}
-                            title="Asks AI to simulate the project execution and return the output."
-                            className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 text-green-400 rounded-md font-medium text-sm hover:bg-green-500/20 transition-colors"
+                            onClick={handleRun}
+                            disabled={buttonDisabled}
+                            title="Run the project code in a sandboxed environment."
+                            className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 text-green-400 rounded-md font-medium text-sm hover:bg-green-500/20 transition-colors disabled:opacity-50 disabled:cursor-wait"
                         >
-                            <PlayIcon className="w-4 h-4" />
-                            Run
+                            {isLoading || isRunning ? <RefreshIcon className="w-4 h-4 animate-spin"/> : <PlayIcon className="w-4 h-4" />}
+                            {buttonText}
                         </button>
                         <div className="flex items-center">
                             {consoleOutput && consoleOutput.length > 0 && (
                                 <button
-                                    onClick={onClearConsole}
+                                    onClick={() => onUpdate(p => ({ ...p!, consoleOutput: [] }))}
                                     title="Clear Console"
                                     className="p-2 rounded-full text-text-secondary hover:bg-accent-hover hover:text-text-primary transition-colors"
                                 >
@@ -258,7 +384,7 @@ const ExecutionView: React.FC<{
                             consoleOutput.map((line, index) => (
                                 <div key={index} className="flex items-start">
                                     <span className="select-none text-text-tertiary mr-3">{'>'}</span>
-                                    <pre className={`whitespace-pre-wrap flex-1 ${line.type === 'error' ? 'text-red-400' : ''}`}>
+                                    <pre className={`whitespace-pre-wrap flex-1 ${line.type === 'error' ? 'text-red-400' : line.type === 'info' ? 'text-blue-300' : ''}`}>
                                         {line.message}
                                     </pre>
                                 </div>
@@ -266,8 +392,8 @@ const ExecutionView: React.FC<{
                         ) : (
                             <div className="text-center text-text-tertiary pt-8 h-full flex flex-col items-center justify-center">
                                 <TerminalIcon className="w-12 h-12 text-text-tertiary/50 mb-4" />
-                                <p>Click "Run" to ask Gemini to simulate the project's execution.</p>
-                                <p className="text-xs mt-1">The output will appear here.</p>
+                                <p>Click "Run" to execute the project.</p>
+                                <p className="text-xs mt-1">Output will appear here.</p>
                             </div>
                         )}
                     </div>
@@ -303,7 +429,7 @@ const ExecutionView: React.FC<{
 };
 
 // --- Main Sandbox ---
-export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdate, onAutoFixRequest, onExecuteRequest }) => {
+export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdate, onAutoFixRequest }) => {
     const { files, openFiles, activeFile, consoleOutput } = sandboxState;
     const [activeView, setActiveView] = useState<ActiveView>('editor');
 
@@ -311,7 +437,7 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
         const fileNames = Object.keys(files || {});
         if (fileNames.length === 0) return 'unknown';
         if (fileNames.some(name => name.endsWith('.py'))) return 'python';
-        if (fileNames.some(name => name.endsWith('index.js') && fileNames.includes('package.json'))) return 'node';
+        if (fileNames.some(name => name.endsWith('index.js') || name.endsWith('main.js') || name.endsWith('app.js'))) return 'node';
         if (fileNames.some(name => name.endsWith('.html') || name.endsWith('.jsx') || name.endsWith('.js'))) return 'web';
         return 'unknown';
     }, [files]);
@@ -356,11 +482,6 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
             }));
         }
     };
-
-    const handleConsoleUpdate = useCallback((line: { type: string, message: string }) => {
-        onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), line] }));
-        setActiveView('console');
-    }, [onUpdate]);
 
     const TabButton: React.FC<{ view: ActiveView, children: React.ReactNode, disabled?: boolean }> = ({ view, children, disabled }) => (
         <button onClick={() => setActiveView(view)} disabled={disabled} data-active={activeView === view} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors duration-200 disabled:opacity-40 disabled:cursor-not-allowed border-b-2 data-[active=true]:border-accent data-[active=true]:text-text-primary border-transparent text-text-secondary hover:text-text-primary`}>
@@ -411,11 +532,9 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
                                 {activeView === 'preview' && isExecutable && (
                                     <ExecutionView 
                                         files={files} 
-                                        onConsoleUpdate={handleConsoleUpdate} 
-                                        onExecute={onExecuteRequest}
                                         projectType={projectType}
                                         consoleOutput={consoleOutput}
-                                        onClearConsole={() => onUpdate(p => ({ ...p!, consoleOutput: [] }))}
+                                        onUpdate={onUpdate}
                                     />
                                 )}
                                 {activeView === 'console' && projectType === 'web' && (

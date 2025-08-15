@@ -446,18 +446,6 @@ Please analyze all errors and the code, explain the causes, and provide a single
     _sendMessage(prompt, [], false, true);
   }, [activeChat, _sendMessage]);
 
-  const handleExecuteRequest = useCallback((language: string) => {
-    if (!activeChat?.sandboxState) return;
-
-    const fileContents = Object.entries(activeChat.sandboxState.files)
-        .map(([path, file]) => `--- ${path} ---\n${file.code}`)
-        .join('\n\n');
-
-    const prompt = `Please run the following ${language} project and provide the complete standard output in a \`\`\`stdout\`\`\` block. Do not add any other commentary. The project files are:\n\n${fileContents}`;
-    
-    _sendMessage(prompt, [], false, true);
-}, [activeChat?.sandboxState, _sendMessage]);
-
   const handleNewChat = () => {
     handleStop();
     setActiveChatId(null);
@@ -648,7 +636,6 @@ Please analyze all errors and the code, explain the causes, and provide a single
               onClose={() => setSandboxState(null)}
               onUpdate={handleSandboxUpdate}
               onAutoFixRequest={handleAutoFixRequest}
-              onExecuteRequest={handleExecuteRequest}
             />
           </div>
         )}
