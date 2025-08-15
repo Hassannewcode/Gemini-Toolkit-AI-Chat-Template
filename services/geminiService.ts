@@ -68,8 +68,8 @@ Before your main response, you MUST output your internal design and development 
 `;
 
 const systemInstructions = {
-    'gemini': { role: "model", parts: [{ text: systemInstructionText }] },
-    'unrestrained': { role: "model", parts: [{ text: unrestrainedSystemInstructionText }] }
+    'gemini': systemInstructionText,
+    'unrestrained': unrestrainedSystemInstructionText
 };
 
 
@@ -87,8 +87,9 @@ export async function* generateResponseStream(
     
     const chat = ai.chats.create({
         model,
-        history: [systemInstruction, ...history],
+        history: history,
         config: {
+          systemInstruction: systemInstruction,
           temperature: 0.8,
           topP: 0.95,
           topK: 64, // Increased topK for more nuanced responses
