@@ -98,87 +98,6 @@ const FileDownloads: React.FC<{ files: Message['files'] }> = ({ files }) => {
     );
 };
 
-const ReasoningDisplay: React.FC<{ reasoning: Message['reasoning'], status: AIStatus, timing?: Message['timing'] }> = ({ reasoning, status, timing }) => {
-    const detailsRef = useRef<HTMLDetailsElement>(null);
-
-    const thought = (reasoning as any)?.step1_analyze_json_input;
-    const critique = (reasoning as any)?.step2_reimagine_and_visualize;
-    const reviseAndPlan = (reasoning as any)?.step3_revise_and_plan;
-    
-    const plan = reasoning?.plan;
-
-    if (!reasoning && status !== AIStatus.Thinking) return null;
-    
-    const initialWaitTime = timing?.initialWait;
-
-    if (status === AIStatus.Thinking || !reasoning) {
-         return (
-             <div className="flex items-center gap-3 text-sm text-text-secondary animate-pulse-fast my-4">
-                 <BoltIcon className="w-5 h-5" />
-                 <span>Thinking... {initialWaitTime && `(${initialWaitTime.toFixed(2)}s)`}</span>
-             </div>
-         );
-    }
-    
-    const hasContent = thought || critique || reviseAndPlan || (plan && plan.length > 0);
-    if (!hasContent) return null;
-    
-    return (
-        <details ref={detailsRef} className="text-sm my-4 group bg-black/20 border border-border rounded-lg transition-all duration-300 overflow-hidden animate-fade-in" open>
-            <summary className="cursor-pointer text-text-secondary hover:text-text-primary transition-colors flex items-center justify-between gap-2 p-3 list-none">
-                <div className="flex items-center gap-3 font-medium">
-                    <BoltIcon className="w-5 h-5" />
-                    Reasoning
-                </div>
-                <PlusIcon className="w-5 h-5 group-open:rotate-45 transition-transform duration-300 ease-in-out" />
-            </summary>
-            <div className="p-4 border-t border-border space-y-4 bg-surface/20">
-                {thought && (
-                    <div className="animate-slide-down-and-fade">
-                        <h4 className="font-semibold text-text-primary mb-1.5 flex justify-between items-center">
-                          <span>Step 1: Analysis</span>
-                          {timing?.step1 && <span className="text-xs font-mono text-text-tertiary bg-background px-1.5 py-0.5 rounded-full">{timing.step1.toFixed(2)}s</span>}
-                        </h4>
-                        <p className="text-text-secondary whitespace-pre-wrap leading-relaxed">{thought}</p>
-                    </div>
-                )}
-                 {critique && (
-                    <div className="animate-slide-down-and-fade" style={{ animationDelay: '100ms' }}>
-                        <h4 className="font-semibold text-text-primary mb-1.5 flex justify-between items-center">
-                          <span>Step 2: Reimagine & Visualize</span>
-                          {timing?.step2 && <span className="text-xs font-mono text-text-tertiary bg-background px-1.5 py-0.5 rounded-full">{timing.step2.toFixed(2)}s</span>}
-                        </h4>
-                        <p className="text-text-secondary whitespace-pre-wrap leading-relaxed">{critique}</p>
-                    </div>
-                )}
-                {reviseAndPlan && (
-                    <div className="animate-slide-down-and-fade" style={{ animationDelay: '200ms' }}>
-                        <h4 className="font-semibold text-text-primary mb-1.5 flex justify-between items-center">
-                           <span>Step 3: Revise & Plan</span>
-                           {timing?.step3 && <span className="text-xs font-mono text-text-tertiary bg-background px-1.5 py-0.5 rounded-full">{timing.step3.toFixed(2)}s</span>}
-                        </h4>
-                        <p className="text-text-secondary whitespace-pre-wrap leading-relaxed">{reviseAndPlan}</p>
-                    </div>
-                )}
-                {plan && Array.isArray(plan) && plan.length > 0 && (
-                     <div className="animate-slide-down-and-fade" style={{ animationDelay: '300ms' }}>
-                        <h4 className="font-semibold text-text-primary mb-2">Final Plan</h4>
-                        <ul className="space-y-2">
-                            {plan.map((step: any, i: number) => (
-                                <li key={i} className="flex items-start gap-3">
-                                  <span className="bg-border text-text-tertiary rounded-full w-5 h-5 text-xs flex items-center justify-center flex-shrink-0 mt-0.5">{i+1}</span>
-                                  <span>{step.step} <span className="text-xs text-text-tertiary font-mono bg-surface px-1 py-0.5 rounded">({step.tool})</span></span>
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-            </div>
-        </details>
-    );
-};
-
-
 interface CodeBlockProps {
     code: string;
     language: string;
@@ -397,6 +316,7 @@ export const ChatMessage: React.FC<{ message: Message, onOpenInSandbox: (code: s
   const isUser = message.sender === Sender.User;
   const isStreaming = (message.status === AIStatus.Generating || message.status === AIStatus.Thinking) && !isUser;
   const displayedText = useTypewriter(message.text, isStreaming && message.status === AIStatus.Generating);
+  const isThinking = message.status === AIStatus.Thinking && !isUser && !message.text;
 
   const content = useMemo(() => {
       const parts = displayedText.split(/(```[\s\S]*?```)/g);
@@ -429,8 +349,6 @@ export const ChatMessage: React.FC<{ message: Message, onOpenInSandbox: (code: s
         <SparklesIcon className="w-5 h-5" />
       </div>
   );
-  
-  const showReasoning = !isUser && (message.reasoning || message.status === AIStatus.Thinking);
 
   return (
     <div
@@ -445,7 +363,12 @@ export const ChatMessage: React.FC<{ message: Message, onOpenInSandbox: (code: s
         <AttachmentsPreview attachments={message.attachments} />
         {isUser && <p className="text-text-primary/95 leading-relaxed whitespace-pre-wrap">{message.text}</p>}
         
-        {showReasoning && <ReasoningDisplay reasoning={message.reasoning} status={message.status!} timing={message.timing} />}
+        {isThinking && (
+          <div className="flex items-center gap-3 text-sm text-text-secondary animate-pulse-fast my-4">
+            <BoltIcon className="w-5 h-5" />
+            <span>Thinking...</span>
+          </div>
+        )}
         
         {!isUser && (
             <div className="text-text-primary/95 leading-relaxed">

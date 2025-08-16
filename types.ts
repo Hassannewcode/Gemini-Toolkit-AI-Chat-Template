@@ -23,15 +23,9 @@ export interface Message {
   text: string;
   timestamp: number;
   status?: AIStatus;
-  reasoning?: {
-    thought: string;
-    critique: string;
-    plan: any;
-  } | null;
   attachments?: { name: string; type: string; data: string; }[];
   files?: { filename: string; content: string; }[];
   groundingMetadata?: any;
-  timing?: { [key: string]: number };
 }
 
 export type ModelType = 'gemini' | 'unrestrained';

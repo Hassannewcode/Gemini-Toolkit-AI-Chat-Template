@@ -1,5 +1,6 @@
 
 
+
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatInput } from './components/ChatInput';
@@ -120,7 +121,6 @@ const App: React.FC = () => {
       text: '',
       timestamp: Date.now(),
       status: AIStatus.Thinking,
-      timing: {},
     };
     
     const tempActiveChatId = activeChatId || `chat-${Date.now()}`;
@@ -166,19 +166,12 @@ const App: React.FC = () => {
     };
     const promptJson = JSON.stringify(promptPayload, null, 2);
 
-    const reasoningRegex = /<reasoning>([\s\S]*?)<\/reasoning>/;
-
-    const startTime = Date.now();
-    let stageTimers = { start: startTime, step1: 0, step2: 0, step3: 0, endReasoning: 0 };
-    let timingResults: { [key: string]: number } = {};
-
     try {
       const stream = generateResponseStream(promptJson, history, geminiAttachments, controller.signal, isSearchActive, modelForThisMessage);
       
       let buffer = '';
-      let reasoningData: any = null;
       let groundingMetadata: any = null;
-      let isReasoningFound = false;
+      let hasStartedGenerating = false;
 
       for await (const chunk of stream) {
         if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -189,64 +182,18 @@ const App: React.FC = () => {
         }
 
         let currentStatus = AIStatus.Thinking;
-        
-        if (!isReasoningFound) {
-            const now = Date.now();
-            if (stageTimers.step1 === 0 && buffer.includes('<step1_analyze_json_input>')) {
-                stageTimers.step1 = now;
-                timingResults.initialWait = (now - stageTimers.start) / 1000;
-            }
-            if (stageTimers.step2 === 0 && buffer.includes('<step2_reimagine_and_visualize>')) {
-                stageTimers.step2 = now;
-                if (stageTimers.step1 > 0) timingResults.step1 = (now - stageTimers.step1) / 1000;
-            }
-            if (stageTimers.step3 === 0 && buffer.includes('<step3_revise_and_plan>')) {
-                stageTimers.step3 = now;
-                if (stageTimers.step2 > 0) timingResults.step2 = (now - stageTimers.step2) / 1000;
-            }
-
-            const reasoningMatch = buffer.match(reasoningRegex);
-            if (reasoningMatch) {
-              if (stageTimers.endReasoning === 0) {
-                  stageTimers.endReasoning = now;
-                  if (stageTimers.step3 > 0) timingResults.step3 = (now - stageTimers.step3) / 1000;
-              }
-              const reasoningBlock = reasoningMatch[1];
-              try {
-                const step1Match = reasoningBlock.match(/<step1_analyze_json_input>([\s\S]*?)<\/step1_analyze_json_input>/);
-                const step2Match = reasoningBlock.match(/<step2_reimagine_and_visualize>([\s\S]*?)<\/step2_reimagine_and_visualize>/);
-                const step3Match = reasoningBlock.match(/<step3_revise_and_plan>([\s\S]*?)<\/step3_revise_and_plan>/);
-                
-                let plan = null;
-                if(step3Match) {
-                    const planMatch = step3Match[1].match(/<plan>([\s\S]*?)<\/plan>/);
-                    if (planMatch) {
-                        try {
-                            plan = JSON.parse(planMatch[1].trim());
-                        } catch(e) { console.error("failed to parse plan json", e); }
-                    }
-                }
-
-                reasoningData = { 
-                  step1_analyze_json_input: step1Match ? step1Match[1].trim() : '', 
-                  step2_reimagine_and_visualize: step2Match ? step2Match[1].trim() : '',
-                  step3_revise_and_plan: step3Match ? step3Match[1].replace(/<plan>[\s\S]*?<\/plan>/, '').trim() : '',
-                  plan: plan
-                };
-                isReasoningFound = true;
-
-              } catch (e) { /* ignore parsing errors */ }
-              currentStatus = AIStatus.Generating;
-              setCurrentAIStatus(AIStatus.Generating);
-            }
+        if (!hasStartedGenerating && buffer.trim().length > 0) {
+            hasStartedGenerating = true;
+            currentStatus = AIStatus.Generating;
+            setCurrentAIStatus(AIStatus.Generating);
+        } else if (hasStartedGenerating) {
+            currentStatus = AIStatus.Generating;
         }
-        
-        const textToSet = isReasoningFound ? buffer.replace(reasoningRegex, '').trimStart() : buffer;
         
         setChats(prev => prev.map(chat => {
           if (chat.id === tempActiveChatId) {
             const updatedMessages = chat.messages.map(msg => 
-              msg.id === aiMessageId ? { ...msg, text: textToSet, reasoning: reasoningData, status: currentStatus, groundingMetadata, timing: { ...(msg.timing || {}), ...timingResults } } : msg
+              msg.id === aiMessageId ? { ...msg, text: buffer, status: currentStatus, groundingMetadata } : msg
             );
             return { ...chat, messages: updatedMessages };
           }
