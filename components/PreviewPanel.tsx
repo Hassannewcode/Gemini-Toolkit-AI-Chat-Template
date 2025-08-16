@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import { Chat, SandboxFile } from '../types';
-import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, FolderIcon, FileIcon, ChevronRightIcon, ChevronDownIcon, PlusIcon, RefreshIcon, TrashIcon, ExpandIcon, CollapseIcon, DevicePhoneMobileIcon, DeviceTabletIcon, ComputerDesktopIcon, StopIcon } from './icons';
+import { XMarkIcon, CodeBracketIcon, EyeIcon, TerminalIcon, PlayIcon, BoltIcon, FolderIcon, FileIcon, ChevronRightIcon, ChevronDownIcon, PlusIcon, RefreshIcon, TrashIcon, ExpandIcon, CollapseIcon, DevicePhoneMobileIcon, DeviceTabletIcon, ComputerDesktopIcon, StopIcon, EllipsisVerticalIcon, CheckIcon } from './icons';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import Editor from '@monaco-editor/react';
 
@@ -249,6 +249,7 @@ const PreviewView: React.FC<{
         if (headTag) {
             const injectionPoint = headTag.index + headTag[0].length;
             const fullInterceptorScript = `
+                <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
                 <script type="importmap">
                 {
                   "imports": {
@@ -265,6 +266,7 @@ const PreviewView: React.FC<{
             <!DOCTYPE html>
             <html>
                 <head>
+                    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
                     <script type="importmap">{ "imports": { "react": "https://esm.sh/react@18.2.0", "react-dom/client": "https://esm.sh/react-dom@18.2.0/client" }}</script>
                     <script>${interceptorScript}</script>
                 </head>
@@ -274,14 +276,34 @@ const PreviewView: React.FC<{
 
     useEffect(() => {
         const handler = setTimeout(() => {
-            const indexHtmlFile = Object.entries(files).find(([path]) => path === 'index.html' || path.endsWith('.html'));
-            if (!indexHtmlFile) {
-                setSrcDoc('<html><body><div style="font-family: sans-serif; padding: 2rem; color: #94a3b8;"><h1>No HTML file found</h1><p>Create an index.html file to see a preview.</p></div></body></html>');
+            const indexHtmlFile = Object.entries(files).find(([path]) => path === 'index.html');
+            const indexJsxFile = Object.entries(files).find(([path]) => ['index.jsx', 'index.tsx', 'main.jsx', 'main.tsx', 'App.jsx', 'App.tsx'].includes(path.split('/').pop()!));
+
+
+            if (!indexHtmlFile && !indexJsxFile) {
+                setSrcDoc('<html><body><div style="font-family: sans-serif; padding: 2rem; color: #94a3b8;"><h1>No entry point found</h1><p>Create an index.html, index.jsx, or App.jsx file to see a preview.</p></div></body></html>');
                 return;
             }
 
-            let htmlContent = indexHtmlFile[1].code;
-            const basePath = indexHtmlFile[0];
+            let htmlContent;
+            let basePath;
+
+            if (indexHtmlFile) {
+                htmlContent = indexHtmlFile[1].code;
+                basePath = indexHtmlFile[0];
+            } else {
+                basePath = indexJsxFile![0];
+                htmlContent = `
+                    <!DOCTYPE html>
+                    <html>
+                    <head><title>Preview</title></head>
+                    <body>
+                        <div id="root"></div>
+                        <script type="text/babel" src="./${basePath}"></script>
+                    </body>
+                    </html>
+                `;
+            }
 
             htmlContent = htmlContent.replace(/<link(?=.*\shref="([^"]+?)")[^>]*>/g, (match, href) => {
                 if (!href || href.startsWith('http')) return match;
@@ -294,8 +316,8 @@ const PreviewView: React.FC<{
                 if (!src || src.startsWith('http')) return match;
                 const jsPath = resolvePath(basePath, src);
                 const jsFile = files[jsPath];
-                const typeModule = match.includes('type="module"');
-                return jsFile ? `<script${typeModule ? ' type="module"' : ''}>${jsFile.code}</script>` : `<!-- Script src ${src} (not found at ${jsPath}) -->`;
+                const isBabel = jsPath.endsWith('.jsx') || jsPath.endsWith('.tsx') || match.includes('type="text/babel"');
+                return jsFile ? `<script${isBabel ? ' type="text/babel"' : ''}>${jsFile.code}</script>` : `<!-- Script src ${src} (not found at ${jsPath}) -->`;
             });
 
             setSrcDoc(buildSrcDoc(htmlContent));
@@ -377,6 +399,7 @@ interface TerminalViewProps {
     onAutoFixRequest: SandboxProps['onAutoFixRequest'];
     onBackendReady: (isReady: boolean) => void;
     onStateChange: (state: ExecutionState) => void;
+    entryPoint: string | null;
 }
 
 export type TerminalActions = {
@@ -384,7 +407,7 @@ export type TerminalActions = {
     stop: () => void;
 }
 
-const TerminalView = forwardRef<TerminalActions, TerminalViewProps>(({ files, projectType, consoleOutput, onUpdate, onAutoFixRequest, onBackendReady, onStateChange }, ref) => {
+const TerminalView = forwardRef<TerminalActions, TerminalViewProps>(({ files, projectType, consoleOutput, onUpdate, onAutoFixRequest, onBackendReady, onStateChange, entryPoint }, ref) => {
     const pyodideRef = useRef<any>(null);
     const workerRef = useRef<Worker | null>(null);
 
@@ -443,11 +466,11 @@ const TerminalView = forwardRef<TerminalActions, TerminalViewProps>(({ files, pr
                     if (dir) pyodide.FS.mkdirTree(dir);
                     pyodide.FS.writeFile(path, files[path].code);
                 }
-                const entryPoint = ['main.py', 'app.py'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.py'));
-                if (entryPoint) {
-                    onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${entryPoint}...` }] }));
+                const resolvedEntryPoint = entryPoint || ['main.py', 'app.py'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.py'));
+                if (resolvedEntryPoint) {
+                    onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${resolvedEntryPoint}...` }] }));
                     await pyodide.runPythonAsync(`import pyodide_http; pyodide_http.patch_all();`);
-                    await pyodide.runPythonAsync(files[entryPoint].code);
+                    await pyodide.runPythonAsync(files[resolvedEntryPoint].code);
                     onBackendReady(true); // Assume server is ready after script runs
                 } else throw new Error("No Python entry point found (e.g., main.py).");
             } catch (e: any) {
@@ -552,9 +575,9 @@ const TerminalView = forwardRef<TerminalActions, TerminalViewProps>(({ files, pr
             };
             workerRef.current.onerror = (e) => { onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: e.message }] })); setState(s => ({ ...s, isRunning: false })); };
             
-            const entryPoint = ['index.js', 'main.js', 'app.js', 'server.js'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.js'));
-            if (entryPoint) {
-                onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${entryPoint}...` }] }));
+            const resolvedEntryPoint = entryPoint || ['index.js', 'main.js', 'app.js', 'server.js'].find(f => f in files) || Object.keys(files).find(f => f.endsWith('.js'));
+            if (resolvedEntryPoint) {
+                onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'info', message: `Running ${resolvedEntryPoint}...` }] }));
                 const filesToSend: { [key: string]: string } = {};
                 for (const path in files) {
                     if (Object.prototype.hasOwnProperty.call(files, path)) {
@@ -562,7 +585,7 @@ const TerminalView = forwardRef<TerminalActions, TerminalViewProps>(({ files, pr
                     }
                 }
                 workerRef.current.postMessage({ type: 'init', files: filesToSend });
-                workerRef.current.postMessage({ type: 'run', entry: entryPoint });
+                workerRef.current.postMessage({ type: 'run', entry: resolvedEntryPoint });
             } else {
                 onUpdate(prev => ({ ...prev!, consoleOutput: [...(prev!.consoleOutput || []), { type: 'error', message: 'No JS entry point found (e.g., index.js).' }] }));
                 setState(s => ({...s, isRunning: false }));
@@ -570,7 +593,7 @@ const TerminalView = forwardRef<TerminalActions, TerminalViewProps>(({ files, pr
         } else {
              setState(s => ({...s, isRunning: false }));
         }
-    }, [files, onBackendReady, onUpdate, projectType]);
+    }, [files, onBackendReady, onUpdate, projectType, entryPoint]);
 
     const handleStop = useCallback(() => {
         if (projectType === 'node' && workerRef.current) {
@@ -620,23 +643,27 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
     const { files, openFiles, activeFile, consoleOutput } = sandboxState;
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const terminalActionsRef = useRef<TerminalActions>(null);
+    const runConfigRef = useRef<HTMLDivElement>(null);
     
     const [isBackendReady, setIsBackendReady] = useState(false);
     const [activeBottomTab, setActiveBottomTab] = useState<'preview' | 'terminal'>('preview');
     const [executionState, setExecutionState] = useState<ExecutionState>({ isRunning: false, isLoading: false, isPyodideReady: false });
+    const [runConfigEntryPoint, setRunConfigEntryPoint] = useState<string | null>(null);
+    const [isRunConfigOpen, setIsRunConfigOpen] = useState(false);
 
     const projectType: ProjectType = useMemo(() => {
         const fileNames = Object.keys(files || {});
         if (fileNames.length === 0) return 'unknown';
-        if (fileNames.some(name => name.endsWith('.html'))) return 'web';
+        if (fileNames.some(name => name.endsWith('.html') || name.endsWith('.jsx') || name.endsWith('.tsx'))) return 'web';
         if (fileNames.some(name => name.endsWith('.py'))) return 'python';
         if (fileNames.some(name => ['server.js', 'index.js', 'main.js', 'app.js'].includes(name) || name === 'package.json')) return 'node';
-        if (fileNames.some(name => name.endsWith('.jsx') || name.endsWith('.js'))) return 'web';
+        if (fileNames.some(name => name.endsWith('.js'))) return 'web'; // Treat standalone JS as web
         return 'unknown';
     }, [files]);
     
     useEffect(() => {
       setIsBackendReady(false);
+      setRunConfigEntryPoint(null); // Reset on file changes
     }, [sandboxState.files]);
 
     useEffect(() => {
@@ -646,6 +673,16 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
             setActiveBottomTab('terminal');
         }
     }, [projectType]);
+    
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+          if (runConfigRef.current && !runConfigRef.current.contains(event.target as Node)) {
+            setIsRunConfigOpen(false);
+          }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+      }, []);
 
     useEffect(() => {
       const handleMessages = async (event: MessageEvent) => {
@@ -704,8 +741,9 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
     const editorLanguage = activeFile ? mapLanguageToMonaco(files[activeFile]?.language) : 'plaintext';
     
     const isRunnable = projectType === 'python' || projectType === 'node';
-    const buttonDisabled = (projectType === 'python' && !executionState.isPyodideReady) || executionState.isRunning || executionState.isLoading;
+    const buttonDisabled = (projectType === 'python' && !executionState.isPyodideReady) || executionState.isLoading;
     const { isRunning, isLoading } = executionState;
+    const runnableFiles = useMemo(() => Object.keys(files).filter(f => f.endsWith('.py') || f.endsWith('.js')), [files]);
 
     return (
         <div className="flex w-full h-full bg-background border-l border-border">
@@ -717,26 +755,51 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
                 <Panel defaultSize={80} minSize={30} className="flex flex-col min-w-0">
                     <header className="flex items-center justify-between pl-4 pr-2 h-12 border-b border-border flex-shrink-0">
                         <h2 className="text-sm font-semibold truncate" title={activeFile || 'Sandbox'}>{activeFile?.split('/').pop() || 'Sandbox'}</h2>
-                         <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-4">
+                         <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
                            {isRunnable && (
-                                <>
+                                <div className={`flex items-center rounded-md ${isRunning ? 'bg-red-500/10' : 'bg-green-500/10'}`}>
                                     <button
                                         onClick={() => isRunning ? terminalActionsRef.current?.stop() : terminalActionsRef.current?.run()}
                                         disabled={buttonDisabled}
-                                        className={`flex items-center gap-2 px-4 py-1.5 rounded-md font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed
-                                            ${isRunning ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20' : 'bg-green-500/10 text-green-400 hover:bg-green-500/20'}
+                                        className={`flex items-center gap-2 pl-3 pr-3 py-1.5 rounded-l-md font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed
+                                            ${isRunning ? 'text-red-400 hover:bg-red-500/20' : 'text-green-400 hover:bg-green-500/20'}
                                         `}
                                     >
                                         {isRunning ? <StopIcon className="w-4 h-4" /> : (isLoading ? <RefreshIcon className="w-4 h-4 animate-spin" /> : <PlayIcon className="w-4 h-4" />)}
                                         {isRunning ? 'Stop' : (isLoading ? 'Loading...' : 'Run')}
                                     </button>
-                                     {isBackendReady && (
-                                        <div className="flex items-center gap-2 text-xs text-green-400 animate-fade-in">
-                                            <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse-fast"></span>
-                                            Backend Live
-                                        </div>
-                                    )}
-                                </>
+                                    <div ref={runConfigRef} className="relative h-full border-l border-white/10">
+                                        <button 
+                                          onClick={() => setIsRunConfigOpen(p => !p)} 
+                                          disabled={isRunning || isLoading}
+                                          className="p-1.5 h-full text-green-400 hover:bg-green-500/20 disabled:opacity-50 rounded-r-md" title="Run Configuration">
+                                            <EllipsisVerticalIcon className="w-5 h-5"/>
+                                        </button>
+                                        {isRunConfigOpen && (
+                                            <div className="absolute top-full right-0 mt-2 w-64 bg-surface border border-border rounded-lg shadow-2xl p-2 z-20 animate-slide-down-and-fade origin-top-right">
+                                                <h3 className="text-xs font-semibold text-text-secondary px-2 pb-2">Select Entry Point</h3>
+                                                <div className="max-h-60 overflow-y-auto">
+                                                    <button onClick={() => { setRunConfigEntryPoint(null); setIsRunConfigOpen(false); }} className="w-full text-left text-sm flex items-center justify-between p-2 rounded-md hover:bg-accent-hover text-text-primary">
+                                                        <span>Auto-detect</span>
+                                                        {runConfigEntryPoint === null && <CheckIcon className="w-4 h-4 text-accent" />}
+                                                    </button>
+                                                    {runnableFiles.map(file => (
+                                                        <button key={file} onClick={() => { setRunConfigEntryPoint(file); setIsRunConfigOpen(false); }} className="w-full text-left text-sm flex items-center justify-between p-2 rounded-md hover:bg-accent-hover text-text-primary">
+                                                            <span className="truncate">{file}</span>
+                                                            {runConfigEntryPoint === file && <CheckIcon className="w-4 h-4 text-accent" />}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                             {isBackendReady && (
+                                <div className="flex items-center gap-2 text-xs text-green-400 animate-fade-in">
+                                    <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse-fast"></span>
+                                    Backend Live
+                                </div>
                             )}
                         </div>
                         <div className="flex items-center gap-1">
@@ -825,6 +888,7 @@ export const Sandbox: React.FC<SandboxProps> = ({ sandboxState, onClose, onUpdat
                                             onAutoFixRequest={onAutoFixRequest}
                                             onBackendReady={setIsBackendReady}
                                             onStateChange={setExecutionState}
+                                            entryPoint={runConfigEntryPoint}
                                         />
                                     </div>
                                 </div>
